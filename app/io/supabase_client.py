@@ -11,7 +11,12 @@ def init_supabase_client() -> Client | None:
     """
     conf = get_supabase_conf()
     if not conf.url or not conf.key:
-        st.warning("Не знайдено SUPABASE_URL або SUPABASE_KEY у secrets.toml")
+        st.warning(
+            "Supabase не ініціалізовано. Перевірте st.secrets:\n"
+            "- SUPABASE_URL / SUPABASE_KEY (корінь)\n"
+            "- [general] секція\n"
+            "- [supabase] url / anon_key"
+        )
         return None
 
     try:
