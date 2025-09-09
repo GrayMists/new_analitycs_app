@@ -13,23 +13,51 @@ class SupabaseConf:
 
 def get_supabase_conf() -> SupabaseConf:
     """
-    Читає SUPABASE_URL та SUPABASE_KEY зі st.secrets.
-    Якщо ключів немає — повертає None для відповідних полів.
+    Читає налаштування Supabase зі st.secrets з підтримкою кількох форматів.
 
-    Очікувані ключі у .streamlit/secrets.toml (у корені або в секції [general]):
-    SUPABASE_URL = "https://xxx.supabase.co"
-    SUPABASE_KEY = "<service_or_anon_key>"
-    
-    або
-    
-    [general]
-    SUPABASE_URL = "https://xxx.supabase.co"
-    SUPABASE_KEY = "<service_or_anon_key>"
+    Підтримувані варіанти у .streamlit/secrets.toml або у Secrets на Streamlit Cloud:
+
+    1) Плоский варіант (корінь):
+       SUPABASE_URL = "https://xxx.supabase.co"
+       SUPABASE_KEY = "<service_or_anon_key>"
+
+    2) Секція [general]:
+       [general]
+       SUPABASE_URL = "https://xxx.supabase.co"
+       SUPABASE_KEY = "<service_or_anon_key>"
+
+    3) Секція [supabase] (рекомендовано):
+       [supabase]
+       url = "https://xxx.supabase.co"
+       anon_key = "<anon_key>"
+
+    Повертає SupabaseConf з url та key або None, якщо ключі не знайдені.
     """
     try:
-        # Дозволяємо зберігати у корені або в секції [general]
-        url = st.secrets.get("SUPABASE_URL") or st.secrets.get("general", {}).get("SUPABASE_URL")  # type: ignore[attr-defined]
-        key = st.secrets.get("SUPABASE_KEY") or st.secrets.get("general", {}).get("SUPABASE_KEY")  # type: ignore[attr-defined]
+        # Підтримка всіх поширених форматів secrets:
+        # 1) Плоскі ключі у корені
+        url = st.secrets.get("SUPABASE_URL")
+        key = st.secrets.get("SUPABASE_KEY")
+
+        # 2) Усередині секції [general]
+        if not url or not key:
+            general = st.secrets.get("general", {})
+            if not url:
+                url = general.get("SUPABASE_URL")
+            if not key:
+                key = general.get("SUPABASE_KEY")
+
+        # 3) Усередині секції [supabase] (рекомендований формат)
+        #    [supabase]
+        #    url = "https://...supabase.co"
+        #    anon_key = "..."
+        if not url or not key:
+            supa = st.secrets.get("supabase", {})
+            if not url:
+                url = supa.get("url")
+            if not key:
+                # основний рекомендований ключ
+                key = supa.get("anon_key") or supa.get("key")
     except Exception:
         url, key = None, None
 
