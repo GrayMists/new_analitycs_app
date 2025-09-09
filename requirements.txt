@@ -2,5 +2,7 @@ streamlit
 pandas
 plotly
 pydeck
-geopy
+matplotlib
 supabase
+geopy
+openpyxl
