@@ -182,7 +182,7 @@ def _fetch_territories(_client, region_id: int | None):
 def show():
     _require_login()
     st.set_page_config(layout="wide")
-    st.title("🏪 Аптеки — ABC-аналіз")
+    st.title("🏪 Аптеки — аналіз")
     client = init_supabase_client()
     if client is None:
         st.error("Supabase не ініціалізовано. Перевірте st.secrets['SUPABASE_URL'|'SUPABASE_KEY'].")
@@ -324,7 +324,7 @@ def show():
             (shared_filters.get('months') or None) == (months_param or None)
         ):
             df_loaded = shared_df
-            st.caption("Дані взяті зі спільного кешу (без повторного запиту до БД). Натисніть \"Отримати дані\" для перезавантаження.")
+            #st.caption("Дані взяті зі спільного кешу (без повторного запиту до БД). Натисніть \"Отримати дані\" для перезавантаження.")
         else:
             st.info('Фільтри змінені. Натисніть "Отримати дані" для застосування.')
             st.stop()
@@ -365,8 +365,8 @@ def show():
             st.warning("Дані не знайдені для обраних фільтрів.")
             st.stop()
 
-        if used_shared:
-            st.caption("Дані взяті зі спільного кешу сторінки Sales (без повторного запиту до БД).")
+        #if used_shared:
+            #st.caption("Дані взяті зі спільного кешу сторінки Sales (без повторного запиту до БД).")
         else:
             st.success(f"Завантажено {len(df_loaded):,} рядків.")
 
@@ -415,67 +415,145 @@ def show():
             df_with_revenue['revenue'] = 0.0
 
     # --- Дві колонки: 1) Мережі/точки  2) ABC-аналіз аптек ---
-    col_net, col_abc = st.columns([1,3])
+    col_net, col_abc = st.columns([2,5])
 
     with col_net:
-        # --- Мережі (new_client) → кількість торгових точок (унікальні адреси) ---
-        st.subheader("Мережі та кількість торгових точок (унікальні адреси)")
-        net_src = df_with_revenue.copy()
-        if 'new_client' not in net_src.columns:
-            st.info("Колонка 'new_client' відсутня — неможливо порахувати мережі.")
-        else:
-            # Сформуємо адресний ключ
-            if {'city','street','house_number'}.issubset(net_src.columns):
-                net_tmp = net_src.copy()
-                net_tmp['__city__'] = net_tmp['city'].fillna('').astype(str).str.strip()
-                net_tmp['__street__'] = net_tmp['street'].fillna('').astype(str).str.strip()
-                net_tmp['__house__'] = net_tmp['house_number'].fillna('').astype(str).str.strip()
-                net_tmp['__addr_key__'] = (
-                    net_tmp['__city__'].str.lower() + '|' + net_tmp['__street__'].str.lower() + '|' + net_tmp['__house__'].str.lower()
-                )
+        # --- Tabs: 1) Торгові точки  2) Упаковки  3) Суми ---
+        tab_points, tab_packs, tab_sum_period = st.tabs([
+            "Торгові точки", "Упаковки", "Сума"
+        ])
+
+        with tab_points:
+            st.subheader("Мережі та кількість торгових точок")
+            net_src = df_with_revenue.copy()
+            if 'new_client' not in net_src.columns:
+                st.info("Колонка 'new_client' відсутня — неможливо порахувати мережі.")
             else:
-                net_tmp = net_src.copy()
-                if 'full_address_processed' in net_tmp.columns:
-                    net_tmp['__addr_key__'] = net_tmp['full_address_processed'].astype(str).fillna('').str.strip().str.lower()
-                elif 'address' in net_tmp.columns:
-                    net_tmp['__addr_key__'] = net_tmp['address'].astype(str).fillna('').str.strip().str.lower()
+                # Сформуємо адресний ключ
+                if {'city','street','house_number'}.issubset(net_src.columns):
+                    net_tmp = net_src.copy()
+                    net_tmp['__city__'] = net_tmp['city'].fillna('').astype(str).str.strip()
+                    net_tmp['__street__'] = net_tmp['street'].fillna('').astype(str).str.strip()
+                    net_tmp['__house__'] = net_tmp['house_number'].fillna('').astype(str).str.strip()
+                    net_tmp['__addr_key__'] = (
+                        net_tmp['__city__'].str.lower() + '|' + net_tmp['__street__'].str.lower() + '|' + net_tmp['__house__'].str.lower()
+                    )
                 else:
-                    net_tmp['__addr_key__'] = ''
-            # Назва мережі
-            net_tmp['__network__'] = net_tmp['new_client'].astype(str).fillna('').str.strip()
-            # Відкидаємо порожні
-            net_tmp = net_tmp[(net_tmp['__network__'] != '') & (net_tmp['__addr_key__'] != '')].copy()
-            if net_tmp.empty:
-                st.info("Немає достатніх даних (мережа/адреса) для підрахунку торгових точок.")
+                    net_tmp = net_src.copy()
+                    if 'full_address_processed' in net_tmp.columns:
+                        net_tmp['__addr_key__'] = net_tmp['full_address_processed'].astype(str).fillna('').str.strip().str.lower()
+                    elif 'address' in net_tmp.columns:
+                        net_tmp['__addr_key__'] = net_tmp['address'].astype(str).fillna('').str.strip().str.lower()
+                    else:
+                        net_tmp['__addr_key__'] = ''
+                # Назва мережі
+                net_tmp['__network__'] = net_tmp['new_client'].astype(str).fillna('').str.strip()
+                # Відкидаємо порожні
+                net_tmp = net_tmp[(net_tmp['__network__'] != '') & (net_tmp['__addr_key__'] != '')].copy()
+                if net_tmp.empty:
+                    st.info("Немає достатніх даних (мережа/адреса) для підрахунку торгових точок.")
+                else:
+                    # Унікальні пари (мережа, адреса)
+                    net_pairs = net_tmp[['__network__','__addr_key__']].drop_duplicates()
+                    # Кількість унікальних адрес (торгових точок) на мережу
+                    net_cnt = (
+                        net_pairs.groupby('__network__', as_index=False)['__addr_key__']
+                        .nunique()
+                        .rename(columns={'__network__':'Мережа','__addr_key__':'Точок'})
+                        .sort_values('Точок', ascending=False)
+                    )
+                    total_points = int(net_cnt['Точок'].sum()) or 1
+                    net_cnt['Частка, %'] = 100.0 * net_cnt['Точок'] / total_points
+                    net_cnt['Кумулятивна, %'] = net_cnt['Частка, %'].cumsum()
+                    # (Необов’язково) кількість міст для мережі
+                    if 'city' in net_src.columns:
+                        city_pairs = net_tmp[['__network__','city']].drop_duplicates()
+                        city_cnt = city_pairs.groupby('__network__', as_index=False)['city'].nunique().rename(columns={'__network__':'Мережа','city':'Міста(к-сть)'})
+                        net_cnt = net_cnt.merge(city_cnt, on='Мережа', how='left')
+                    # Вивід
+                    cols_net = ['Мережа','Точок','Частка, %','Кумулятивна, %'] + ([ 'Міста(к-сть)'] if 'Міста(к-сть)' in net_cnt.columns else [])
+                    st.dataframe(
+                        net_cnt[cols_net]
+                            .style
+                            .format({'Точок':'{:,.0f}','Частка, %':'{:,.2f}','Кумулятивна, %':'{:,.2f}'})
+                            .background_gradient(cmap='Blues', subset=['Точок']),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=600
+                    )
+
+        with tab_packs:
+            st.subheader("Мережі та кількість упаковок")
+            qty_src = df_with_revenue.copy()
+            if 'new_client' not in qty_src.columns:
+                st.info("Колонка 'new_client' відсутня — неможливо порахувати мережі.")
+            elif 'quantity' not in qty_src.columns:
+                st.info("Колонка 'quantity' відсутня — неможливо порахувати кількість упаковок.")
             else:
-                # Унікальні пари (мережа, адреса)
-                net_pairs = net_tmp[['__network__','__addr_key__']].drop_duplicates()
-                # Кількість унікальних адрес (торгових точок) на мережу
-                net_cnt = (
-                    net_pairs.groupby('__network__', as_index=False)['__addr_key__']
-                    .nunique()
-                    .rename(columns={'__network__':'Мережа','__addr_key__':'Точок'})
-                    .sort_values('Точок', ascending=False)
-                )
-                total_points = int(net_cnt['Точок'].sum()) or 1
-                net_cnt['Частка, %'] = 100.0 * net_cnt['Точок'] / total_points
-                net_cnt['Кумулятивна, %'] = net_cnt['Частка, %'].cumsum()
-                # (Необов’язково) кількість міст для мережі
-                if 'city' in net_src.columns:
-                    city_pairs = net_tmp[['__network__','city']].drop_duplicates()
-                    city_cnt = city_pairs.groupby('__network__', as_index=False)['city'].nunique().rename(columns={'__network__':'Мережа','city':'Міста(к-сть)'})
-                    net_cnt = net_cnt.merge(city_cnt, on='Мережа', how='left')
-                # Вивід
-                cols_net = ['Мережа','Точок','Частка, %','Кумулятивна, %'] + ([ 'Міста(к-сть)'] if 'Міста(к-сть)' in net_cnt.columns else [])
-                st.dataframe(
-                    net_cnt[cols_net]
-                        .style
-                        .format({'Точок':'{:,.0f}','Частка, %':'{:,.2f}','Кумулятивна, %':'{:,.2f}'})
-                        .background_gradient(cmap='Blues', subset=['Точок']),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=600
-                )
+                qty_tmp = qty_src.copy()
+                # Назва мережі
+                qty_tmp['__network__'] = qty_tmp['new_client'].astype(str).fillna('').str.strip()
+                # Відкидаємо порожні
+                qty_tmp = qty_tmp[(qty_tmp['__network__'] != '')].copy()
+                if qty_tmp.empty:
+                    st.info("Немає достатніх даних (мережа) для підрахунку упаковок.")
+                else:
+                    # Гарантуємо числовий тип для quantity
+                    qty_tmp['quantity'] = pd.to_numeric(qty_tmp['quantity'], errors='coerce').fillna(0)
+                    net_qty = (
+                        qty_tmp.groupby('__network__', as_index=False)['quantity']
+                        .sum()
+                        .rename(columns={'__network__':'Мережа','quantity':'Упаковок'})
+                        .sort_values('Упаковок', ascending=False)
+                    )
+                    total_qty = float(net_qty['Упаковок'].sum()) or 1.0
+                    net_qty['Частка, %'] = 100.0 * net_qty['Упаковок'] / total_qty
+                    net_qty['Кумулятивна, %'] = net_qty['Частка, %'].cumsum()
+                    st.dataframe(
+                        net_qty[['Мережа','Упаковок','Частка, %','Кумулятивна, %']]
+                            .style
+                            .format({'Упаковок':'{:,.0f}','Частка, %':'{:,.2f}','Кумулятивна, %':'{:,.2f}'})
+                            .background_gradient(cmap='Blues', subset=['Упаковок'])
+                            .background_gradient(cmap='Greens', subset=['Частка, %']),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=600
+                    )
+
+        with tab_sum_period:
+            st.subheader("Сума по мережах (за обраний період)")
+            sum_src = df_with_revenue.copy()
+            if 'new_client' not in sum_src.columns:
+                st.info("Колонка 'new_client' відсутня — неможливо порахувати мережі.")
+            elif 'revenue' not in sum_src.columns:
+                st.info("Колонка 'revenue' відсутня — суми не розраховані.")
+            else:
+                tmp = sum_src.copy()
+                tmp['__network__'] = tmp['new_client'].astype(str).fillna('').str.strip()
+                tmp = tmp[tmp['__network__'] != '']
+                if tmp.empty:
+                    st.info("Немає достатніх даних (мережа) для підрахунку суми.")
+                else:
+                    tmp['revenue'] = pd.to_numeric(tmp['revenue'], errors='coerce').fillna(0.0)
+                    net_sum = (
+                        tmp.groupby('__network__', as_index=False)['revenue']
+                        .sum()
+                        .rename(columns={'__network__':'Мережа','revenue':'Сума'})
+                        .sort_values('Сума', ascending=False)
+                    )
+                    total_rev = float(net_sum['Сума'].sum()) or 1.0
+                    net_sum['Частка, %'] = 100.0 * net_sum['Сума'] / total_rev
+                    net_sum['Кумулятивна, %'] = net_sum['Частка, %'].cumsum()
+                    st.dataframe(
+                        net_sum[['Мережа','Сума','Частка, %','Кумулятивна, %']]
+                            .style
+                            .format({'Сума':'{:,.2f} грн','Частка, %':'{:,.2f}','Кумулятивна, %':'{:,.2f}'})
+                            .background_gradient(cmap='Greens', subset=['Сума'])
+                            .background_gradient(cmap='Blues', subset=['Частка, %']),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=600
+                    )
 
     with col_abc:
         # === ABC-аналіз аптек (за унікальною адресою) ===
