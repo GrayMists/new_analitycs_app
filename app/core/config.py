@@ -54,10 +54,11 @@ def get_supabase_conf() -> SupabaseConf:
         if not url or not key:
             supa = st.secrets.get("supabase", {})
             if not url:
-                url = supa.get("url")
+                # підтримуємо як url, так і SUPABASE_URL
+                url = supa.get("url") or supa.get("SUPABASE_URL")
             if not key:
-                # основний рекомендований ключ
-                key = supa.get("anon_key") or supa.get("key")
+                # підтримуємо anon_key, key, SUPABASE_KEY
+                key = supa.get("anon_key") or supa.get("key") or supa.get("SUPABASE_KEY")
     except Exception:
         url, key = None, None
 
