@@ -16,6 +16,7 @@ from app.charts.filters import specialization_and_drug_filters
 from app.io.supabase_client import init_supabase_client
 from app.io.uploader import upload_doctor_points
 from app.core.config import PIN_COLS, DROP_COLS, DEFAULT_HEADER_ROW
+import re
 
 st.set_page_config(page_title="Перегляд Excel", layout="wide")
 st.title("Перегляд Excel")
@@ -27,13 +28,9 @@ if not uploaded:
     st.info("Оберіть файл .xlsx для перегляду.")
     st.stop()
 
-# --- Вибір аркуша і заголовків ---
-sheets = list_sheets(uploaded.getvalue())
-sheet = st.selectbox("Аркуш", options=sheets, index=0 if sheets else 0)
-header_row = st.number_input("Рядок заголовків (0-based)", min_value=0, value=DEFAULT_HEADER_ROW, step=1)
-
 with st.spinner("Читаю файл..."):
-    df = read_excel_bytes(uploaded.getvalue(), sheet_name=sheet, header_row=header_row)
+    # Always use first sheet and skip first 2 rows (header at row 2, i.e., third row)
+    df = read_excel_bytes(uploaded.getvalue(), sheet_name=0, header_row=2)
     df = clean_dataframe(df)
     df = apply_rename(df)
 
@@ -56,6 +53,15 @@ with st.spinner("Читаю файл..."):
     df_long = unpivot_long(df, id_cols=present_pins).reset_index(drop=True)
     df_long["Файл"] = uploaded.name
 
+    # Extract year and month from filename (allowing underscore or space between)
+    match = re.search(r'(\d{4})[_ ](\d{2})', uploaded.name)
+    if match:
+        df_long["year"] = int(match.group(1))
+        df_long["month"] = int(match.group(2))
+    else:
+        df_long["year"] = None
+        df_long["month"] = None
+
 st.success(f"Зчитано: {len(df):,} рядків × {df.shape[1]} колонок")
 
 # --- Кнопка завантаження у Supabase ---
@@ -70,4 +76,3 @@ elif not client:
 # --- Відображення даних ---
 st.subheader("Таблиця (довгий формат)")
 st.dataframe(df_long, use_container_width=True)
-
