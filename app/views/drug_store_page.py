@@ -13,6 +13,47 @@ def _require_login():
         st.warning("Будь ласка, увійдіть на головній сторінці, щоб переглядати цю сторінку.")
         st.stop()
 
+
+def _auto_fill_user_filters_drug_store(ss: dict, user: dict) -> None:
+    """Автоматично заповнює фільтри з профілю користувача для не-адміністраторів (сторінка аптек)"""
+    if not user or not user.get('id'):
+        return
+    
+    # Отримуємо повний профіль користувача
+    client = init_supabase_client()
+    if not client:
+        return
+    
+    try:
+        result = client.table("profiles").select("*").eq("id", user['id']).execute()
+        if not result.data:
+            return
+        
+        profile = result.data[0]
+        
+        # Заповнюємо фільтри з профілю
+        if profile.get('region'):
+            ss['sales_region'] = profile['region']
+        
+        if profile.get('territory'):
+            ss['sales_territory_name'] = profile['territory']
+            ss['sales_territory_technical'] = profile['territory']  # Припускаємо, що це технічна назва
+        
+        if profile.get('line'):
+            ss['sales_line'] = profile['line']
+        
+        # Встановлюємо поточний місяць за замовчуванням
+        import datetime
+        current_month = datetime.date.today().month
+        if not ss.get('sales_months'):
+            ss['sales_months'] = [current_month]
+        
+        # Автоматично встановлюємо submit_once = True для не-адміністраторів
+        ss['sales_submit_once'] = True
+        
+    except Exception as e:
+        st.error(f"Помилка при отриманні профілю користувача: {e}")
+
 # Ensure "from app..." imports work when run by Streamlit
 PAGES_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(PAGES_DIR)
@@ -205,6 +246,14 @@ def show():
     ss.setdefault('filters_dirty', False)
     ss.setdefault('last_submitted_filters', None)
 
+    # Отримуємо дані користувача
+    user = st.session_state.get('auth_user')
+    is_admin = user and user.get('type') == 'admin'
+    
+    # Для не-адміністраторів: автоматично заповнюємо фільтри з профілю користувача
+    if not is_admin and not ss.get('sales_submit_once', False):
+        _auto_fill_user_filters_drug_store(ss, user)
+    
     # Read URL params into shared state
     _read_query_params_into_state()
     _ensure_filters_from_memory_if_url_empty()
@@ -215,45 +264,66 @@ def show():
     # --- Sidebar: same filter widgets as Sales ---
     with st.sidebar:
         st.markdown("### Фільтри")
-        regions = _fetch_regions(client)
-        region_names = [r["name"] for r in regions]
-        # Preserve previously selected region if it is not in the freshly fetched list
-        prev_region = ss.get('sales_region', _DEF_ALL)
-        if prev_region and prev_region != _DEF_ALL and prev_region not in region_names:
-            region_names = [prev_region] + region_names
-        st.selectbox("Регіон", [_DEF_ALL] + region_names, key="sales_region", on_change=_mark_filters_dirty)
+        
+        if is_admin:
+            # Адміністратори бачать всі фільтри
+            st.info("🔧 Режим адміністратора - повний доступ")
+            
+            regions = _fetch_regions(client)
+            region_names = [r["name"] for r in regions]
+            # Preserve previously selected region if it is not in the freshly fetched list
+            prev_region = ss.get('sales_region', _DEF_ALL)
+            if prev_region and prev_region != _DEF_ALL and prev_region not in region_names:
+                region_names = [prev_region] + region_names
+            st.selectbox("Регіон", [_DEF_ALL] + region_names, key="sales_region", on_change=_mark_filters_dirty)
+        else:
+            # Звичайні користувачі бачать тільки інформацію про їх фільтри
+            st.info("👤 Ваші дані (автоматично завантажено)")
+            st.caption(f"📍 Регіон: {ss.get('sales_region', 'Не вказано')}")
+            st.caption(f"🏢 Територія: {ss.get('sales_territory_name', 'Не вказано')}")
+            st.caption(f"📦 Лінія: {ss.get('sales_line', 'Не вказано')}")
 
-        sel_region_id = None
-        if ss['sales_region'] and ss['sales_region'] != _DEF_ALL:
-            match_r = next((r for r in regions if r["name"] == ss['sales_region']), None)
-            sel_region_id = match_r["id"] if match_r else None
+        if is_admin:
+            sel_region_id = None
+            if ss['sales_region'] and ss['sales_region'] != _DEF_ALL:
+                match_r = next((r for r in regions if r["name"] == ss['sales_region']), None)
+                sel_region_id = match_r["id"] if match_r else None
 
-        territories = _fetch_territories(client, sel_region_id)
-        territory_names = [t["name"] for t in territories]
-        # Preserve previously selected territory if not present
-        prev_terr = ss.get('sales_territory_name', _DEF_ALL)
-        terr_choices = [_DEF_ALL] + territory_names
-        if prev_terr and prev_terr != _DEF_ALL and prev_terr not in terr_choices:
-            terr_choices = [prev_terr] + terr_choices[1:]
-        st.selectbox("Територія", terr_choices, key="sales_territory_name", on_change=_mark_filters_dirty)
+            territories = _fetch_territories(client, sel_region_id)
+            territory_names = [t["name"] for t in territories]
+            # Preserve previously selected territory if not present
+            prev_terr = ss.get('sales_territory_name', _DEF_ALL)
+            terr_choices = [_DEF_ALL] + territory_names
+            if prev_terr and prev_terr != _DEF_ALL and prev_terr not in terr_choices:
+                terr_choices = [prev_terr] + terr_choices[1:]
+            st.selectbox("Територія", terr_choices, key="sales_territory_name", on_change=_mark_filters_dirty)
 
-        ss['sales_territory_technical'] = None
-        if ss['sales_territory_name'] and ss['sales_territory_name'] != _DEF_ALL:
-            match_t = next((t for t in territories if t["name"] == ss['sales_territory_name']), None)
-            ss['sales_territory_technical'] = match_t["technical_name"] if match_t else None
+            ss['sales_territory_technical'] = None
+            if ss['sales_territory_name'] and ss['sales_territory_name'] != _DEF_ALL:
+                match_t = next((t for t in territories if t["name"] == ss['sales_territory_name']), None)
+                ss['sales_territory_technical'] = match_t["technical_name"] if match_t else None
 
-        lines_all = ["Лінія 1", "Лінія 2"]
-        # Preserve previously selected line if not present
-        prev_line = ss.get('sales_line', _DEF_ALL)
-        line_choices = [_DEF_ALL] + lines_all
-        if prev_line and prev_line != _DEF_ALL and prev_line not in line_choices:
-            line_choices = [prev_line] + line_choices[1:]
-        st.selectbox(
-            "Лінія продукту",
-            line_choices,
-            key="sales_line",
-            on_change=_mark_filters_dirty,
-        )
+            lines_all = ["Лінія 1", "Лінія 2"]
+            # Preserve previously selected line if not present
+            prev_line = ss.get('sales_line', _DEF_ALL)
+            line_choices = [_DEF_ALL] + lines_all
+            if prev_line and prev_line != _DEF_ALL and prev_line not in line_choices:
+                line_choices = [prev_line] + line_choices[1:]
+            st.selectbox(
+                "Лінія продукту",
+                line_choices,
+                key="sales_line",
+                on_change=_mark_filters_dirty,
+            )
+        else:
+            # Для не-адміністраторів отримуємо region_id з профілю
+            try:
+                if client and user and user.get('id'):
+                    result = client.table("profiles").select("region_id").eq("id", user['id']).execute()
+                    if result.data:
+                        sel_region_id = result.data[0].get('region_id')
+            except Exception:
+                sel_region_id = None
 
         month_keys = list(UKRAINIAN_MONTHS.keys())
         ss['sales_months'] = [m for m in ss.get('sales_months', []) if m in month_keys]
@@ -265,24 +335,29 @@ def show():
             on_change=_mark_filters_dirty,
         )
 
-        if st.button("Отримати дані", type="primary", use_container_width=True):
+        # Кнопка "Отримати дані" тільки для адміністраторів
+        if is_admin:
+            if st.button("Отримати дані", type="primary", use_container_width=True):
+                ss['sales_submit_once'] = True
+                ss['filters_dirty'] = False
+                # snapshot of filters at submission time (normalized ints for months)
+                ss['last_submitted_filters'] = {
+                    'region_name': (None if (ss['sales_region'] == _DEF_ALL or not ss['sales_region']) else ss['sales_region']),
+                    'territory_name': ss['sales_territory_name'],
+                    'territory_technical': ss.get('sales_territory_technical'),
+                    'line': ("Всі" if (ss['sales_line'] == _DEF_ALL or not ss['sales_line']) else ss['sales_line']),
+                    'months_int': _norm_months_list(ss['sales_months']),
+                }
+                _write_state_to_query_params(
+                    ss['sales_region'],
+                    ss['sales_territory_name'],
+                    ss['sales_line'],
+                    ss['sales_months'],
+                    True,
+                )
+        else:
+            # Для не-адміністраторів автоматично встановлюємо submit_once
             ss['sales_submit_once'] = True
-            ss['filters_dirty'] = False
-            # snapshot of filters at submission time (normalized ints for months)
-            ss['last_submitted_filters'] = {
-                'region_name': (None if (ss['sales_region'] == _DEF_ALL or not ss['sales_region']) else ss['sales_region']),
-                'territory_name': ss['sales_territory_name'],
-                'territory_technical': ss.get('sales_territory_technical'),
-                'line': ("Всі" if (ss['sales_line'] == _DEF_ALL or not ss['sales_line']) else ss['sales_line']),
-                'months_int': _norm_months_list(ss['sales_months']),
-            }
-            _write_state_to_query_params(
-                ss['sales_region'],
-                ss['sales_territory_name'],
-                ss['sales_line'],
-                ss['sales_months'],
-                True,
-            )
 
     # Якщо кнопка не натиснута, але є спільний датасет зі сторінки Sales — використовуємо його.
     # Інакше просимо натиснути кнопку і зупиняємо виконання.
