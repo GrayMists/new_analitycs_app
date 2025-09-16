@@ -18,18 +18,18 @@ def get_supabase_conf() -> SupabaseConf:
     Підтримувані варіанти у .streamlit/secrets.toml або у Secrets на Streamlit Cloud:
 
     1) Плоский варіант (корінь):
-       SUPABASE_URL = "https://xxx.supabase.co"
-       SUPABASE_KEY = "<service_or_anon_key>"
+       SUPABASE_URL = "your_supabase_url"
+       SUPABASE_KEY = "your_service_or_anon_key"
 
     2) Секція [general]:
        [general]
-       SUPABASE_URL = "https://xxx.supabase.co"
-       SUPABASE_KEY = "<service_or_anon_key>"
+       SUPABASE_URL = "your_supabase_url"
+       SUPABASE_KEY = "your_service_or_anon_key"
 
     3) Секція [supabase] (рекомендовано):
        [supabase]
-       url = "https://xxx.supabase.co"
-       anon_key = "<anon_key>"
+       url = "your_supabase_url"
+       anon_key = "your_anon_key"
 
     Повертає SupabaseConf з url та key або None, якщо ключі не знайдені.
     """
@@ -51,10 +51,10 @@ def get_supabase_conf() -> SupabaseConf:
             supa = st.secrets.get("supabase", {})
             if not url:
                 # підтримуємо як url, так і SUPABASE_URL
-                url = supa.get("SUPABASE_URL")
+                url = supa.get("url") or supa.get("SUPABASE_URL")
             if not key:
                 # підтримуємо anon_key, key, SUPABASE_KEY
-                key = supa.get("SUPABASE_KEY")
+                key = supa.get("anon_key") or supa.get("key") or supa.get("SUPABASE_KEY")
     except Exception:
         url, key = None, None
 

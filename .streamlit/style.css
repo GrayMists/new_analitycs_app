@@ -1,0 +1,29 @@
+/* Приховуємо стандартну бокову панель Streamlit */
+.css-1d391kg {
+    display: none !important;
+}
+
+/* Приховуємо стандартну навігацію Streamlit */
+.css-1rs6os {
+    display: none !important;
+}
+
+/* Приховуємо кнопку меню Streamlit */
+.css-1rs6os.edgvbvh3 {
+    display: none !important;
+}
+
+/* Приховуємо стандартну навігацію в sidebar */
+.css-1d391kg .css-1rs6os {
+    display: none !important;
+}
+
+/* Приховуємо стандартну навігацію сторінок */
+.css-1rs6os .css-1rs6os {
+    display: none !important;
+}
+
+/* Приховуємо стандартну навігацію в header */
+.css-1rs6os .css-1rs6os .css-1rs6os {
+    display: none !important;
+}

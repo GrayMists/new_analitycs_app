@@ -1,9 +1,8 @@
-# app/pages/20_Drug_store.py
+# app/views/drug_store_page.py
 from __future__ import annotations
 
 import os, sys
 import streamlit as st
-
 import pandas as pd
 
 # --- Auth guard: require login before viewing this page ---
@@ -24,6 +23,7 @@ if PROJECT_ROOT not in sys.path:
 # Internal modules
 from app.io import loader_sales as data_loader
 from app.io.supabase_client import init_supabase_client
+# Видаляємо імпорт навігації, оскільки вона вже є в основному файлі
 from app.utils import UKRAINIAN_MONTHS
 
 @st.cache_data(show_spinner=False, ttl=1800)
@@ -689,6 +689,13 @@ def show():
             else:
                 st.info("Немає даних для ABC-аналізу аптек за кількістю.")
 
+
+def show_drug_store_page():
+    """
+    Сторінка: 🏪 Аптеки
+    Обгортка для інтеграції з навігацією
+    """
+    show()
 
 if __name__ == "__main__":
     show()

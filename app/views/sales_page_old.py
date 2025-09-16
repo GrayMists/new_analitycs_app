@@ -1,4 +1,4 @@
-# app/pages/10_Sales.py
+# app/views/sales_page.py
 from __future__ import annotations
 
 import os, sys
@@ -29,6 +29,7 @@ if PROJECT_ROOT not in sys.path:
 from app.io import loader_sales as data_loader
 from app.io.supabase_client import init_supabase_client
 from app.data import processing_sales as data_processing
+# Видаляємо імпорт навігації, оскільки вона вже є в основному файлі
 
 from app.utils import UKRAINIAN_MONTHS
 
@@ -1396,6 +1397,13 @@ def show():
                 st.info("Недостатньо даних для порівняння між місяцями.")
         else:
             st.info("Колонка продукту відсутня для розрахунку динаміки.")
+def show_sales_page():
+    """
+    Сторінка: 📊 Аналіз продажів
+    Обгортка для інтеграції з навігацією
+    """
+    show()
+
 # За правилами Streamlit, у сторінці лишаємо виклик show() при імпорті
 # але краще явно:
 if __name__ == "__main__":

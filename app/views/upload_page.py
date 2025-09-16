@@ -1,4 +1,4 @@
-# app/pages/20_Upload_Sales.py
+# app/views/upload_page.py
 from __future__ import annotations
 
 import os, sys, re
@@ -12,12 +12,18 @@ PROJECT_ROOT = os.path.dirname(APP_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-from app.utils import PRODUCTS_DICT
 from app.io.supabase_client import init_supabase_client
+from app.io.loader_sales import fetch_all_sales_data
+from app.data.processing_sales import create_full_address, compute_actual_sales
+from app.data.transform import unpivot_long, group_by_drug_and_specialty
+from app.utils import PRODUCTS_DICT
 
-# ініціалізація supabase
-supabase = init_supabase_client()
-
+# --- Auth guard: require login before viewing this page ---
+def _require_login():
+    user = st.session_state.get('auth_user')
+    if not user:
+        st.warning("Будь ласка, увійдіть на головній сторінці, щоб переглядати цю сторінку.")
+        st.stop()
 
 def normalize_address(address: str) -> str:
     """Надійна нормалізація рядка адреси."""
@@ -27,23 +33,31 @@ def normalize_address(address: str) -> str:
     address = re.sub(r"\s+", " ", address)
     return address.lower().strip()
 
-
 def get_golden_address(address: str, golden_map: dict) -> dict:
     """Повертає golden-рядок адреси, якщо знайдений у golden_map."""
     lookup_key = normalize_address(address)
     default_result = {"city": None, "street": None, "number": None, "territory": None}
     return golden_map.get(lookup_key, default_result)
 
+def show(show_title=True):
+    """
+    Основна функція сторінки завантаження
+    """
+    # Авторизація вже перевірена в excel_page.py
 
-def show():
-    st.title("🚀 Завантаження та стандартизація даних продажів")
-    st.write("Завантажте ваш Excel-файл, оберіть регіон і натисніть кнопку — дані будуть оброблені й готові для завантаження у Supabase.")
+    if show_title:
+        st.title("🚀 Завантаження та стандартизація даних продажів")
+        st.write("Завантажте ваш Excel-файл, оберіть регіон і натисніть кнопку — дані будуть оброблені й готові для завантаження у Supabase.")
+    else:
+        st.subheader("⬆️ Завантаження даних продажів")
 
+    # Ініціалізація Supabase
+    supabase = init_supabase_client()
     if supabase is None:
         st.error("❌ Supabase не ініціалізовано. Перевірте st.secrets.")
         st.stop()
 
-    # --- довідники ---
+    # --- Завантаження довідників ---
     try:
         all_regions_data = supabase.table("region").select("*").execute().data or []
         all_clients_data = supabase.table("client").select("*").execute().data or []
@@ -56,6 +70,7 @@ def show():
     else:
         client_map = {}
 
+    # --- Форма завантаження ---
     col1, col2 = st.columns(2)
     with col1:
         uploaded_file = st.file_uploader("1. Виберіть Excel-файл з адресами", type=["xlsx", "xls"], key="file_uploader")
@@ -114,7 +129,7 @@ def show():
                 result_df = pd.concat([df_filtered, parsed_df], axis=1)
 
                 # додаємо дату з назви файлу (yyyy_mm_dd або yyyy_mm)
-                date_match = re.search(r"(\\d{4}_\\d{2}(_\\d{2})?)", uploaded_file.name)
+                date_match = re.search(r"(\d{4}_\d{2}(_\d{2})?)", uploaded_file.name)
                 if date_match:
                     parts = date_match.group(0).split("_")
                     result_df["year"] = parts[0]
@@ -133,8 +148,13 @@ def show():
                 else:
                     result_df["new_client"] = None
 
+                # додаємо інформацію про регіон
+                result_df["region_id"] = region_id
+                result_df["region_name"] = selected_region_name
+
                 st.session_state["upload_result_df"] = result_df
                 st.success("✅ Файл опрацьовано!")
+                
             except Exception as e:
                 st.error(f"Помилка при обробці файлу: {e}")
 
@@ -207,9 +227,9 @@ def show():
                 except Exception as e:
                     st.error(f"Помилка при завантаженні у Supabase: {e}")
 
-
-# виклик для Streamlit
-if __name__ == "__main__":
-    show()
-else:
+def show_upload_page():
+    """
+    Сторінка: ⬆️ Завантажити
+    Обгортка для інтеграції з навігацією
+    """
     show()

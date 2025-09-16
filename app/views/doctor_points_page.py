@@ -1,8 +1,7 @@
-# app/pages/01_Doctor_Points.py
+# app/views/doctor_points_page.py
 import os, sys
 import streamlit as st
 import plotly.express as px
-
 import pandas as pd
 
 # --- Auth guard: require login before viewing this page ---
@@ -503,3 +502,10 @@ else:
             if pt_qty_total_max_df is not None:
                 st.markdown("**ПІБ лікаря × Макс. \"Кіл-сть упаковок загальна\" по місяцях**")
                 st.dataframe(pt_qty_total_max_df, use_container_width=True)
+
+def show_doctor_points_page():
+    """
+    Сторінка: 👨‍⚕️ Лікарі
+    Обгортка для інтеграції з навігацією
+    """
+    show()

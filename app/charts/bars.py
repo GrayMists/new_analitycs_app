@@ -52,31 +52,6 @@ def bar_combo_category(df_with_cat: pd.DataFrame, height: int = 600, rotate_labe
     )
     return chart
 
-def bar_stacked_by_specialty(df: pd.DataFrame, height: int = 450, rotate_labels: int = -45) -> alt.Chart:
-    """
-    Варіант: x = Препарат, y = К-сть, колір = Спеціалізація лікаря (stacked).
-    Корисно, коли хочеш бачити внесок спеціалізацій у кожен препарат.
-    """
-    _check_cols(df, ["Препарат", "Спеціалізація лікаря", "К-сть"])
-    chart = (
-        alt.Chart(df)
-        .mark_bar()
-        .encode(
-            x=alt.X("Препарат:N",
-                    sort=None,
-                    axis=alt.Axis(labelAngle=rotate_labels, labelLimit=0)),
-            y=alt.Y("К-сть:Q", stack="zero"),
-            color=alt.Color("Спеціалізація лікаря:N", legend=alt.Legend(title="Спеціалізація")),
-            tooltip=[
-                alt.Tooltip("Препарат:N", title="Препарат"),
-                alt.Tooltip("Спеціалізація лікаря:N", title="Спеціалізація"),
-                alt.Tooltip("К-сть:Q", title="Кількість", format=",.0f"),
-            ],
-        )
-        .properties(width="container", height=height)
-    )
-    return chart
-
 # -------------- helpers --------------
 
 def _check_cols(df: pd.DataFrame, cols: list[str]) -> None:
