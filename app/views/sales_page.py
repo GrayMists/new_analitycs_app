@@ -122,7 +122,7 @@ def _render_filters_sidebar(data_service: SalesDataService) -> Dict[str, Any]:
         'region_name': ss['sales_region'],
         'territory_name': ss['sales_territory_name'],
         'territory_technical': ss['sales_territory_technical'],
-        'line': ss['line'],
+        'line': ss['sales_line'],
         'months': ss['sales_months'],
         'submit_once': ss['sales_submit_once']
     }

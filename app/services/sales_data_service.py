@@ -17,7 +17,7 @@ class SalesDataService:
     
     @st.cache_data(show_spinner=False, ttl=1800)
     def fetch_sales_data(
-        self, 
+        _self, 
         region_name: Optional[str], 
         territory: str, 
         line: str, 
@@ -32,17 +32,17 @@ class SalesDataService:
         )
     
     @st.cache_data(show_spinner=False, ttl=1800)
-    def fetch_price_data(self, region_id: int, months: List[int]) -> pd.DataFrame:
+    def fetch_price_data(_self, region_id: int, months: List[int]) -> pd.DataFrame:
         """Завантажує дані цін з кешуванням"""
         return data_loader.fetch_price_data(region_id=region_id, months=months)
     
     @st.cache_data(show_spinner=False, ttl=1800)
-    def fetch_regions(self) -> List[Dict[str, Any]]:
+    def fetch_regions(_self) -> List[Dict[str, Any]]:
         """Завантажує список регіонів"""
-        if not self.client:
+        if not _self.client:
             return []
         try:
-            rows = self.client.table("region").select("id,name").order("name").execute().data or []
+            rows = _self.client.table("region").select("id,name").order("name").execute().data or []
             return [
                 {"id": r.get("id"), "name": r.get("name")}
                 for r in rows
@@ -52,12 +52,12 @@ class SalesDataService:
             return []
     
     @st.cache_data(show_spinner=False, ttl=1800)
-    def fetch_territories(self, region_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    def fetch_territories(_self, region_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Завантажує список територій"""
-        if not self.client:
+        if not _self.client:
             return []
         try:
-            q = self.client.table("territory").select("name,technical_name,region_id").order("name")
+            q = _self.client.table("territory").select("name,technical_name,region_id").order("name")
             if region_id:
                 q = q.eq("region_id", region_id)
             rows = q.execute().data or []

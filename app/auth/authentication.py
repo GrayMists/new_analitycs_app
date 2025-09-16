@@ -18,14 +18,17 @@ def authenticate_user(email: str, password: str) -> dict | None:
         return None
     
     try:
-        # Знаходимо користувача в таблиці profiles з перевіркою пароля
-        result = client.table("profiles").select("id,email,full_name,type,password_hash").eq("email", email).execute()
+        # Знаходимо користувача в таблиці profiles
+        # Тимчасово без перевірки пароля, поки не додана колонка password_hash
+        result = client.table("profiles").select("id,email,full_name,type,nickname,region,territory,line,city,region_id").eq("email", email).execute()
         
         if result.data and len(result.data) > 0:
             user_data = result.data[0]
-            stored_hash = user_data.get("password_hash")
             
-            # Перевіряємо пароль
+            # Тимчасово: аутентифікація тільки по email
+            # TODO: Після додавання колонки password_hash в БД, розкоментуйте код нижче
+            """
+            stored_hash = user_data.get("password_hash")
             if stored_hash and _verify_password(password, stored_hash):
                 return {
                     "id": user_data.get("id"),
@@ -37,6 +40,21 @@ def authenticate_user(email: str, password: str) -> dict | None:
             else:
                 st.error("Невірний пароль")
                 return None
+            """
+            
+            return {
+                "id": user_data.get("id"),
+                "email": user_data.get("email"),
+                "full_name": user_data.get("full_name"),
+                "type": user_data.get("type"),
+                "nickname": user_data.get("nickname"),
+                "region": user_data.get("region"),
+                "territory": user_data.get("territory"),
+                "line": user_data.get("line"),
+                "city": user_data.get("city"),
+                "region_id": user_data.get("region_id"),
+                "authenticated": True
+            }
         else:
             st.error("Користувач з таким email не знайдений")
             return None
@@ -63,6 +81,12 @@ def save_auth_to_cookies(user_data):
         "email": user_data.get("email"),
         "full_name": user_data.get("full_name"),
         "type": user_data.get("type"),
+        "nickname": user_data.get("nickname"),
+        "region": user_data.get("region"),
+        "territory": user_data.get("territory"),
+        "line": user_data.get("line"),
+        "city": user_data.get("city"),
+        "region_id": user_data.get("region_id"),
         "authenticated": True
     }
     
