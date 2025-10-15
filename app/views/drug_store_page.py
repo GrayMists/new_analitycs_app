@@ -493,9 +493,9 @@ def show():
     col_net, col_abc = st.columns([2,5])
 
     with col_net:
-        # --- Tabs: 1) Торгові точки  2) Упаковки  3) Суми ---
-        tab_points, tab_packs, tab_sum_period = st.tabs([
-            "Торгові точки", "Упаковки", "Сума"
+        # --- Tabs: 1) Торгові точки  2) Упаковки  3) Суми   ---
+        tab_points, tab_packs, tab_sum_period, tab_fact_addr = st.tabs([
+            "Торгові точки", "Упаковки", "Сума", "Факт за адресами"
         ])
 
         with tab_points:
@@ -616,6 +616,91 @@ def show():
                         .rename(columns={'__network__':'Мережа','revenue':'Сума'})
                         .sort_values('Сума', ascending=False)
                     )
+
+        with tab_fact_addr:
+            st.subheader("Деталізація фактичних замовлень по унікальних адресах")
+            # Локальні фільтри (місто/вулиця) на основі df_work
+            local_src = df_work.copy()
+            city_col = 'city' if 'city' in local_src.columns else None
+            street_col = 'street' if 'street' in local_src.columns else None
+            col_c, col_s = st.columns(2)
+            if city_col:
+                city_opts = sorted({str(x).strip() for x in local_src[city_col].dropna() if str(x).strip()})
+                sel_cities = col_c.multiselect("Місто", options=city_opts, default=[])
+                if sel_cities:
+                    local_src = local_src[local_src[city_col].astype(str).str.strip().isin(sel_cities)]
+            else:
+                sel_cities = []
+            if street_col:
+                street_opts = sorted({str(x).strip() for x in local_src[street_col].dropna() if str(x).strip()})
+                sel_streets = col_s.multiselect("Вулиця", options=street_opts, default=[])
+                if sel_streets:
+                    local_src = local_src[local_src[street_col].astype(str).str.strip().isin(sel_streets)]
+            else:
+                sel_streets = []
+
+            # Обчислюємо "факт" як позитивну кількість (за наявності quantity)
+            if 'quantity' in local_src.columns:
+                df_actual_sales = local_src.copy()
+                df_actual_sales['actual_quantity'] = pd.to_numeric(df_actual_sales['quantity'], errors='coerce').fillna(0)
+                df_actual_sales = df_actual_sales[df_actual_sales['actual_quantity'] > 0]
+            else:
+                df_actual_sales = pd.DataFrame()
+
+            if df_actual_sales.empty:
+                st.warning("За обраними фільтрами не знайдено даних для розрахунку.")
+            else:
+                def highlight_positive_dark_green(val):
+                    return f"background-color: {'#4B6F44' if (pd.to_numeric(val, errors='coerce') or 0) > 0 else ''}"
+
+                st.subheader("Загальна зведена таблиця по фактичних продажах")
+                idx_cols_exist = [c for c in ['product_name'] if c in df_actual_sales.columns]
+                time_cols_exist = [c for c in ['year','month_int','decade'] if c in df_actual_sales.columns]
+                if idx_cols_exist and time_cols_exist:
+                    pivot_fact = df_actual_sales.pivot_table(
+                        index=idx_cols_exist[0],
+                        columns=time_cols_exist,
+                        values='actual_quantity',
+                        aggfunc='sum', fill_value=0
+                    )
+                    st.dataframe(pivot_fact.style.applymap(highlight_positive_dark_green).format('{:.0f}'))
+                st.markdown("---")
+
+                # Формуємо повну адресу і групуємо по адресі+клієнту
+                addr_df = df_actual_sales.copy()
+                if {'city','street','house_number'}.issubset(addr_df.columns):
+                    addr_df['full_address'] = (
+                        addr_df['city'].fillna('').astype(str).str.strip() + ', ' +
+                        addr_df['street'].fillna('').astype(str).str.strip() + ' ' +
+                        addr_df['house_number'].fillna('').astype(str).str.strip()
+                    ).str.strip(', ')
+                elif 'full_address_processed' in addr_df.columns:
+                    addr_df['full_address'] = addr_df['full_address_processed'].astype(str).fillna('').str.strip()
+                elif 'address' in addr_df.columns:
+                    addr_df['full_address'] = addr_df['address'].astype(str).fillna('').str.strip()
+                else:
+                    addr_df['full_address'] = ''
+
+                client_name_col = next((c for c in ['new_client','client','pharmacy','client_name'] if c in addr_df.columns), None)
+                if client_name_col is None:
+                    addr_df['__client_name__'] = ''
+                    client_name_col = '__client_name__'
+
+                grouped = addr_df.groupby(['full_address', client_name_col])
+                st.info(f"Знайдено {grouped.ngroups} унікальних комбінацій адрес і клієнтів з фактичними продажами.")
+
+                for (full_address, client_name), group in grouped:
+                    exp_title = f"**{full_address or '—'}** (Клієнт: *{client_name or '—'}*)"
+                    with st.expander(exp_title):
+                        st.metric("Всього фактичних продажів за адресою:", f"{int(group['actual_quantity'].sum()):,}")
+                        if idx_cols_exist and time_cols_exist:
+                            pivot_table = group.pivot_table(
+                                index=idx_cols_exist[0],
+                                columns=time_cols_exist,
+                                values='actual_quantity',
+                                aggfunc='sum', fill_value=0
+                            )
+                            st.dataframe(pivot_table.style.applymap(highlight_positive_dark_green).format('{:.0f}'))
                     total_rev = float(net_sum['Сума'].sum()) or 1.0
                     net_sum['Частка, %'] = 100.0 * net_sum['Сума'] / total_rev
                     net_sum['Кумулятивна, %'] = net_sum['Частка, %'].cumsum()

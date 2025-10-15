@@ -1,29 +1,51 @@
-/* Приховуємо стандартну бокову панель Streamlit */
-.css-1d391kg {
+
+
+/* Header залишаємо видимим, щоб був тумблер сайдбару (правило видалено) */
+
+/* Hide the Streamlit footer */
+footer[data-testid="stFooter"] {
     display: none !important;
 }
 
-/* Приховуємо стандартну навігацію Streamlit */
-.css-1rs6os {
+
+/* Hide the Streamlit decoration */
+div[data-testid="stDecoration"] {
     display: none !important;
 }
 
-/* Приховуємо кнопку меню Streamlit */
-.css-1rs6os.edgvbvh3 {
-    display: none !important;
+/* Make the main content area full width */
+.main .block-container {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+    max-width: 100%;
 }
 
-/* Приховуємо стандартну навігацію в sidebar */
-.css-1d391kg .css-1rs6os {
-    display: none !important;
+/* Hide the Streamlit branding */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+/* Generic bordered container used in user_dashboard */
+.box {
+  border: 1px solid rgba(0,0,0,0.1);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
 }
 
-/* Приховуємо стандартну навігацію сторінок */
-.css-1rs6os .css-1rs6os {
-    display: none !important;
+/* Compact KPI styling: smaller fonts and tighter spacing */
+.kpi-compact .stMetric label, .kpi-compact [data-testid="stMetricDelta"] {
+  font-size: 0.9rem !important;
+}
+.kpi-compact .stMetric {
+  gap: 0.25rem !important;
 }
 
-/* Приховуємо стандартну навігацію в header */
-.css-1rs6os .css-1rs6os .css-1rs6os {
-    display: none !important;
+/* Tighter and smaller KPI values/labels */
+.kpi-compact [data-testid="stMetricValue"] {
+  font-size: 200.0rem !important;
+}
+.kpi-compact [data-testid="stMetricLabel"] {
+  font-size: 0.8rem !important;
+}
+.kpi-compact [data-testid="stMetricDelta"] {
+  font-size: 0.8rem !important;
 }

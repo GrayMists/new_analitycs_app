@@ -9,21 +9,25 @@ st.set_page_config(
     page_title="Analytics App",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
-
-# Завантажуємо CSS стилі для приховування стандартної навігації
-def load_css():
-    with open(".streamlit/style.css") as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-
-load_css()
 
 # Додаємо корінь проєкту до sys.path для імортів
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(APP_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
+
+# Завантажуємо CSS стилі для приховування стандартної навігації
+def load_css():
+    css_path = os.path.join(PROJECT_ROOT, ".streamlit", "style.css")
+    if os.path.exists(css_path):
+        with open(css_path) as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    else:
+        st.warning(f"CSS file not found at: {css_path}")
+
+load_css()
 
 from app.auth.authentication import load_auth_from_cookies, logout_user, get_current_user, is_authenticated
 from app.auth.login_form import render_login_form
