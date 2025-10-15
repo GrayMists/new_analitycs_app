@@ -13,9 +13,8 @@ def init_supabase_client() -> Client | None:
     if not conf.url or not conf.key:
         st.warning(
             "Supabase не ініціалізовано. Перевірте st.secrets:\n"
-            "- SUPABASE_URL / SUPABASE_KEY (корінь)\n"
-            "- [general] секція\n"
-            "- [supabase] url / anon_key"
+            "- [supabase] секція\n"
+            "- SUPABASE_URL та SUPABASE_KEY"
         )
         return None
 

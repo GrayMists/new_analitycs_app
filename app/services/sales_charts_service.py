@@ -25,9 +25,9 @@ class SalesChartsService:
         """Рендерить графік для кількох місяців"""
         prod_col_chart = 'product_name_clean' if 'product_name_clean' in df_work.columns else 'product_name'
         
-        # Drop first 3 symbols from names for chart labels
+        # Використовуємо повні назви продуктів без обрізання
         df_work = df_work.copy()
-        df_work[prod_col_chart] = df_work[prod_col_chart].astype(str).str[3:].str.strip()
+        df_work[prod_col_chart] = df_work[prod_col_chart].astype(str).str.strip()
         
         # Агрегуємо ТІЛЬКИ по останній декаді кожного обраного місяця
         if {'year','month_int','decade'}.issubset(df_work.columns):
@@ -75,11 +75,8 @@ class SalesChartsService:
                 text='total_quantity',
             )
             fig_qty_grouped.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-            fig_qty_grouped.update_layout(
-                xaxis_tickangle=-45,
-                margin=dict(l=10, r=10, t=10, b=80),
-                height=550,
-            )
+            fig_qty_grouped.update_xaxes(tickangle=-45, automargin=True)
+            fig_qty_grouped.update_layout(margin=dict(l=10, r=10, t=10, b=140), height=550)
             st.plotly_chart(fig_qty_grouped, use_container_width=True)
         else:
             st.info("Немає даних для побудови діаграми за кілька місяців.")
@@ -89,9 +86,9 @@ class SalesChartsService:
         """Рендерить графік для одного місяця"""
         prod_col_chart = 'product_name_clean' if 'product_name_clean' in df_latest_decade.columns else 'product_name'
         
-        # Drop first 3 symbols from names for chart labels
+        # Використовуємо повні назви продуктів без обрізання
         df_latest_decade = df_latest_decade.copy()
-        df_latest_decade[prod_col_chart] = df_latest_decade[prod_col_chart].astype(str).str[3:].str.strip()
+        df_latest_decade[prod_col_chart] = df_latest_decade[prod_col_chart].astype(str).str.strip()
         
         qty_chart_df = (
             df_latest_decade.groupby(prod_col_chart, as_index=False)['quantity']
@@ -114,11 +111,8 @@ class SalesChartsService:
                 text='total_quantity',
             )
             fig_qty_overall.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-            fig_qty_overall.update_layout(
-                xaxis_tickangle=-45,
-                margin=dict(l=10, r=10, t=10, b=80),
-                height=550,
-            )
+            fig_qty_overall.update_xaxes(tickangle=-45, automargin=True)
+            fig_qty_overall.update_layout(margin=dict(l=10, r=10, t=10, b=140), height=550)
             st.plotly_chart(fig_qty_overall, use_container_width=True)
         else:
             st.info("Немає даних для побудови діаграми (остання декада).")
