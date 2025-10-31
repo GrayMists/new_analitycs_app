@@ -64,8 +64,7 @@ def _render_filters_sidebar(data_service: SalesDataService) -> Dict[str, Any]:
         prev_region = ss.get('sales_region', _DEF_ALL)
         if prev_region and prev_region != _DEF_ALL and prev_region not in region_names:
             region_names = [prev_region] + region_names
-        st.selectbox("Регіон", [_DEF_ALL] + region_names, key="sales_region_filter", on_change=_mark_filters_dirty)
-
+        st.selectbox("Регіон", [_DEF_ALL] + region_names, key="sales_region", on_change=_mark_filters_dirty)
         
         # Територія
         sel_region_id = None
@@ -190,6 +189,10 @@ def _render_charts(charts_service: SalesChartsService, df_work: pd.DataFrame, df
     with tab_trend:
         charts_service.render_trend_chart(df_period_trend)
     
+    with tab_bcg:
+        if bcg_data is not None and not bcg_data.empty:
+            charts_service.render_bcg_matrix(bcg_data)
+
 
 
 def _render_analytics(analytics_service: SalesAnalyticsService, formatters: SalesFormatters,
@@ -330,15 +333,37 @@ def show():
     # Завантаження цін
     all_months_int = df_work['month_int'].dropna().astype(int).unique().tolist()
     price_df_all = pd.DataFrame()
-    if all_months_int and filters['region_id']:
-        price_key_all = cache_manager.make_price_key(filters['region_id'], all_months_int)
+
+    # Якщо region_id не вказаний, спробуємо розв'язати його по імені регіону (fallback)
+    region_id_for_price = filters.get('region_id')
+    if region_id_for_price is None and filters.get('region_name') and filters.get('region_name') != "(усі)":
+        regions = data_service.fetch_regions()
+        match_r = next((r for r in regions if r.get('name') == filters.get('region_name')), None)
+        region_id_for_price = match_r['id'] if match_r else None
+
+    if all_months_int and region_id_for_price:
+        price_key_all = cache_manager.make_price_key(region_id_for_price, all_months_int)
         price_df_all = cache_manager.get_cached_price_data(price_key_all)
         if price_df_all is None:
-            price_df_all = data_service.fetch_price_data(filters['region_id'], all_months_int)
+            price_df_all = data_service.fetch_price_data(region_id_for_price, all_months_int)
             cache_manager.set_cached_price_data(price_key_all, price_df_all)
+    else:
+        if not region_id_for_price:
+            st.info("Ціни не завантажено — не вдалося визначити ID регіону для отримання прайсів.")
     
     # Додавання даних про доходи
     df_with_revenue = data_service.add_revenue_data(df_work, price_df_all)
+    # --- DIAGNOSTИКА: скільки прайсів підвантажено і скільки рядків отримали price ---
+    try:
+        price_rows_count = 0 if price_df_all is None or price_df_all.empty else int(len(price_df_all))
+        price_assigned = int(df_with_revenue['price'].notna().sum()) if 'price' in df_with_revenue.columns else 0
+        st.caption(f"Прайс: рядків у прайсі={price_rows_count}, рядків в робочому зрізі={len(df_work):,}, з price={price_assigned:,}")
+        if price_rows_count > 0 and price_assigned == 0:
+            miss = df_with_revenue[df_with_revenue.get('price').isna()]['product_name'].dropna().unique()[:5]
+            if len(miss) > 0:
+                st.caption(f"Приклади препаратів без прайсу: {', '.join(map(str, miss))}")
+    except Exception:
+        pass
     
     # Отримання даних останньої декади
     df_latest_decade, last_decade, cur_year, cur_month = data_service.get_latest_decade_data(df_work)
@@ -400,6 +425,4 @@ def show_sales_page():
 
 
 if __name__ == "__main__":
-    show()
-else:
     show()
