@@ -25,9 +25,9 @@ class SalesChartsService:
         """Рендерить графік для кількох місяців"""
         prod_col_chart = 'product_name_clean' if 'product_name_clean' in df_work.columns else 'product_name'
         
-        # Використовуємо повні назви продуктів без обрізання
+        # Drop first 3 symbols from names for chart labels
         df_work = df_work.copy()
-        df_work[prod_col_chart] = df_work[prod_col_chart].astype(str).str.strip()
+        df_work[prod_col_chart] = df_work[prod_col_chart].astype(str).str[3:].str.strip()
         
         # Агрегуємо ТІЛЬКИ по останній декаді кожного обраного місяця
         if {'year','month_int','decade'}.issubset(df_work.columns):
@@ -75,8 +75,11 @@ class SalesChartsService:
                 text='total_quantity',
             )
             fig_qty_grouped.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-            fig_qty_grouped.update_xaxes(tickangle=-45, automargin=True)
-            fig_qty_grouped.update_layout(margin=dict(l=10, r=10, t=10, b=140), height=550)
+            fig_qty_grouped.update_layout(
+                xaxis_tickangle=-45,
+                margin=dict(l=10, r=10, t=10, b=80),
+                height=550,
+            )
             st.plotly_chart(fig_qty_grouped, use_container_width=True)
         else:
             st.info("Немає даних для побудови діаграми за кілька місяців.")
@@ -86,9 +89,9 @@ class SalesChartsService:
         """Рендерить графік для одного місяця"""
         prod_col_chart = 'product_name_clean' if 'product_name_clean' in df_latest_decade.columns else 'product_name'
         
-        # Використовуємо повні назви продуктів без обрізання
+        # Drop first 3 symbols from names for chart labels
         df_latest_decade = df_latest_decade.copy()
-        df_latest_decade[prod_col_chart] = df_latest_decade[prod_col_chart].astype(str).str.strip()
+        df_latest_decade[prod_col_chart] = df_latest_decade[prod_col_chart].astype(str).str[3:].str.strip()
         
         qty_chart_df = (
             df_latest_decade.groupby(prod_col_chart, as_index=False)['quantity']
@@ -111,8 +114,11 @@ class SalesChartsService:
                 text='total_quantity',
             )
             fig_qty_overall.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-            fig_qty_overall.update_xaxes(tickangle=-45, automargin=True)
-            fig_qty_overall.update_layout(margin=dict(l=10, r=10, t=10, b=140), height=550)
+            fig_qty_overall.update_layout(
+                xaxis_tickangle=-45,
+                margin=dict(l=10, r=10, t=10, b=80),
+                height=550,
+            )
             st.plotly_chart(fig_qty_overall, use_container_width=True)
         else:
             st.info("Немає даних для побудови діаграми (остання декада).")
@@ -189,38 +195,88 @@ class SalesChartsService:
     def render_bcg_matrix(self, bcg_data: pd.DataFrame) -> None:
         """Рендерить BCG матрицю"""
         st.subheader("Матриця BCG (обсяг vs темп росту)")
-        
-        if not bcg_data.empty:
-            fig_bcg = px.scatter(
-                bcg_data,
-                x='qty_last',
-                y='growth_%',
-                text='Препарат',
-                color='Категорія',
-                category_orders={'Категорія': ['Падіння (<0%)','Стабільно (0–3%)','Ріст (>3%)']},
-                color_discrete_map={
-                    'Падіння (<0%)': '#d62728',   # red
-                    'Стабільно (0–10%)': '#ffbf00', # yellow
-                    'Ріст (>3%)': '#2ca02c',      # green
-                },
-                hover_data={
-                    'Препарат': True,
-                    'qty_last': ':.0f',
-                    'qty_prev': ':.0f',
-                    'growth_%': ':.1f',
-                    'Місяць_останній': True,
-                    'Місяць_попередній': True,
-                    'Категорія': False,
-                },
-                labels={
-                    'qty_last':'Обсяг (к-сть, останній місяць)',
-                    'growth_%':'Темп росту, %',
-                    'qty_prev':'Обсяг (к-сть, попередній місяць)',
-                    'Категорія':'Статус',
-                },
-            )
-            fig_bcg.update_traces(textposition='top center')
-            fig_bcg.update_layout(margin=dict(l=10,r=10,t=10,b=10), height=550, legend_title_text='Статус')
-            st.plotly_chart(fig_bcg, use_container_width=True)
-        else:
-            st.info("Для побудови матриці BCG потрібно щонайменше 2 обрані місяці.")
+        # Безпечні перевірки: None, пустий, необхідні колонки
+        if bcg_data is None or not isinstance(bcg_data, pd.DataFrame) or bcg_data.empty:
+            st.info("Для побудови матриці BCG потрібно щонайменше 2 обрані місяці або достатньо даних.")
+            return
+
+        required_cols = {'Препарат', 'qty_last', 'growth_%', 'Категорія'}
+        missing = required_cols - set(bcg_data.columns)
+        if missing:
+            st.warning(f"Некоректні дані для BCG-матриці: відсутні колонки {sorted(missing)}")
+            return
+
+        # Перевіряємо, чи є хоча б один валідний числовий рядок для x/y
+        try:
+            x_vals = pd.to_numeric(bcg_data['qty_last'], errors='coerce')
+            y_vals = pd.to_numeric(bcg_data['growth_%'], errors='coerce')
+        except Exception:
+            st.warning("Неможливо інтерпретувати числові поля у BCG-даних.")
+            return
+
+        if x_vals.dropna().empty or y_vals.dropna().empty:
+            st.info("Недостатньо числових даних для побудови BCG-матриці.")
+            return
+
+        # Побудова графіка (безпечні hover-поля: включає лише існуючі стовпці)
+        hover = {
+            'Препарат': True,
+            'qty_last': ':.0f',
+            'qty_prev': ':.0f',
+            'growth_%': ':.1f',
+            'Категорія': False,
+        }
+        # відфільтруємо hover, якщо деяких колонок немає
+        hover = {k: v for k, v in hover.items() if k in bcg_data.columns}
+
+        # Підготуємо окремий DataFrame для побудови — залишимо лише потрібні/hover колонки
+        keep_cols = ['Препарат', 'qty_last', 'growth_%', 'qty_prev', 'Категорія']
+        keep_cols += [c for c in hover.keys() if c not in keep_cols and c in bcg_data.columns]
+        df_plot = bcg_data.copy()[[c for c in keep_cols if c in bcg_data.columns]]
+
+        # Приведемо типи: числові колонки — до numeric, інші — до простих скалярів (str)
+        for num_c in ['qty_last', 'qty_prev', 'growth_%']:
+            if num_c in df_plot.columns:
+                df_plot[num_c] = pd.to_numeric(df_plot[num_c], errors='coerce')
+
+        # Приводимо складні об'єкти (list/dict) до рядків, щоб Plotly не падав
+        for c in df_plot.select_dtypes(include=['object']).columns:
+            df_plot[c] = df_plot[c].apply(lambda v: v if (v is None or pd.isna(v)) else (v if isinstance(v, (str, int, float)) else str(v)))
+
+        # Заповнимо категорію дефолтним значенням, якщо відсутня
+        if 'Категорія' in df_plot.columns:
+            df_plot['Категорія'] = df_plot['Категорія'].fillna('Невідомо')
+
+        # Видалимо рядки без числових x/y
+        if 'qty_last' in df_plot.columns and 'growth_%' in df_plot.columns:
+            df_plot = df_plot.dropna(subset=['qty_last', 'growth_%'])
+        elif 'qty_last' in df_plot.columns:
+            df_plot = df_plot.dropna(subset=['qty_last'])
+
+        if df_plot.empty:
+            st.info("Після очищення даних для BCG не залишилось рядків з валідними числами.")
+            return
+
+        fig_bcg = px.scatter(
+            df_plot,
+            x='qty_last',
+            y='growth_%',
+            text='Препарат' if 'Препарат' in df_plot.columns else None,
+            color='Категорія' if 'Категорія' in df_plot.columns else None,
+            category_orders={'Категорія': ['Падіння (<0%)', 'Стабільно (0–3%)', 'Ріст (>3%)']},
+            color_discrete_map={
+                'Падіння (<0%)': '#d62728',   # red
+                'Стабільно (0–3%)': '#ffbf00', # yellow
+                'Ріст (>3%)': '#2ca02c',      # green
+            },
+            hover_data=hover,
+            labels={
+                'qty_last':'Обсяг (к-сть, останній місяць)',
+                'growth_%':'Темп росту, %',
+                'qty_prev':'Обсяг (к-сть, попередній місяць)',
+                'Категорія':'Статус',
+            },
+        )
+        fig_bcg.update_traces(textposition='top center')
+        fig_bcg.update_layout(margin=dict(l=10,r=10,t=10,b=10), height=550, legend_title_text='Статус')
+        st.plotly_chart(fig_bcg, use_container_width=True)
