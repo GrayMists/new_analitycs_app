@@ -64,7 +64,8 @@ def _render_filters_sidebar(data_service: SalesDataService) -> Dict[str, Any]:
         prev_region = ss.get('sales_region', _DEF_ALL)
         if prev_region and prev_region != _DEF_ALL and prev_region not in region_names:
             region_names = [prev_region] + region_names
-        st.selectbox("Регіон", [_DEF_ALL] + region_names, key="sales_region", on_change=_mark_filters_dirty)
+        st.selectbox("Регіон", [_DEF_ALL] + region_names, key="sales_region_filter", on_change=_mark_filters_dirty)
+
         
         # Територія
         sel_region_id = None
