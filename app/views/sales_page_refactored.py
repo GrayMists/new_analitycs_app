@@ -177,7 +177,7 @@ def _render_charts(charts_service: SalesChartsService, df_work: pd.DataFrame, df
                   df_city_src: pd.DataFrame, df_period_trend: pd.DataFrame, bcg_data: pd.DataFrame,
                   sel_months_int: list, last_decade: int, cur_month: int, cur_year: int) -> None:
     """Рендерить всі графіки"""
-    tab_qty, tab_city, tab_trend, tab_bcg = st.tabs(["Кількість по продуктах", "Виручка по містах (+ к-сть)", "Тренд по декадах ", "BCG"])
+    tab_qty, tab_city, tab_trend, tab_bcg = st.tabs(["Кількість по продуктах", "Виручка по містах (+ к-сть)", "Тренд по декадах "])
     
     with tab_qty:
         charts_service.render_product_quantity_chart(df_work, df_latest_decade, sel_months_int, last_decade, cur_month, cur_year)
@@ -188,8 +188,7 @@ def _render_charts(charts_service: SalesChartsService, df_work: pd.DataFrame, df
     with tab_trend:
         charts_service.render_trend_chart(df_period_trend)
     
-    with tab_bcg:
-        charts_service.render_bcg_matrix(bcg_data)
+
 
 
 def _render_analytics(analytics_service: SalesAnalyticsService, formatters: SalesFormatters,
