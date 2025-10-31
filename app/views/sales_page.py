@@ -189,8 +189,6 @@ def _render_charts(charts_service: SalesChartsService, df_work: pd.DataFrame, df
     with tab_trend:
         charts_service.render_trend_chart(df_period_trend)
     
-    with tab_bcg:
-        charts_service.render_bcg_matrix(bcg_data)
 
 
 def _render_analytics(analytics_service: SalesAnalyticsService, formatters: SalesFormatters,
