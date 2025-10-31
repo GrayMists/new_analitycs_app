@@ -108,18 +108,72 @@ class SalesDataService:
     def add_revenue_data(self, df_work: pd.DataFrame, price_df: pd.DataFrame) -> pd.DataFrame:
         """Додає дані про доходи до DataFrame"""
         df_with_revenue = df_work.copy()
-        if not price_df.empty:
-            df_with_revenue = pd.merge(
-                df_with_revenue,
-                price_df,
-                left_on=['product_name', 'month_int'],
-                right_on=['product_name', 'month_int'],
-                how='left'
-            )
-            df_with_revenue['revenue'] = df_with_revenue['quantity'] * df_with_revenue['price']
-        else:
+        if price_df is None or price_df.empty:
             df_with_revenue['revenue'] = 0.0
-        return df_with_revenue
+            return df_with_revenue
+
+        # Перша спроба — прямий merge по product_name та month_int
+        merged = pd.merge(
+            df_with_revenue,
+            price_df,
+            left_on=['product_name', 'month_int'],
+            right_on=['product_name', 'month_int'],
+            how='left',
+            suffixes=('', '_p')
+        )
+
+        # Якщо знайшлись ціни — використовуємо
+        if 'price' in merged.columns and merged['price'].notna().any():
+            merged['revenue'] = merged['quantity'] * pd.to_numeric(merged['price'], errors='coerce').fillna(0.0)
+            return merged
+
+        # Друга спроба — спробуємо зв'язати по очищеному product_name (product_name_clean)
+        price_df2 = price_df.copy()
+        # Створюємо product_name_clean в прайсі (таку саму нормалізацію як у prepare_work_data)
+        if 'product_name' in price_df2.columns:
+            price_df2['product_name_clean'] = (
+                price_df2['product_name'].astype(str)
+                .str.replace(r'^\s*[\d\W_]+', '', regex=True)
+                .str.strip()
+            )
+
+        if 'product_name_clean' in df_with_revenue.columns and 'product_name_clean' in price_df2.columns:
+            merged2 = pd.merge(
+                df_with_revenue,
+                price_df2,
+                left_on=['product_name_clean', 'month_int'],
+                right_on=['product_name_clean', 'month_int'],
+                how='left',
+                suffixes=('', '_p')
+            )
+            if 'price' in merged2.columns and merged2['price'].notna().any():
+                merged2['revenue'] = merged2['quantity'] * pd.to_numeric(merged2['price'], errors='coerce').fillna(0.0)
+                return merged2
+
+        # Третя спроба — нечутливе до регістру порівняння product_name
+        price_df3 = price_df.copy()
+        if 'product_name' in price_df3.columns:
+            price_df3['product_name_lower'] = price_df3['product_name'].astype(str).str.lower().str.strip()
+        df_work_lower = df_with_revenue.copy()
+        if 'product_name' in df_work_lower.columns:
+            df_work_lower['product_name_lower'] = df_work_lower['product_name'].astype(str).str.lower().str.strip()
+
+        if 'product_name_lower' in df_work_lower.columns and 'product_name_lower' in price_df3.columns:
+            merged3 = pd.merge(
+                df_work_lower,
+                price_df3,
+                left_on=['product_name_lower', 'month_int'],
+                right_on=['product_name_lower', 'month_int'],
+                how='left',
+                suffixes=('', '_p')
+            )
+            if 'price' in merged3.columns and merged3['price'].notna().any():
+                merged3['revenue'] = merged3['quantity'] * pd.to_numeric(merged3['price'], errors='coerce').fillna(0.0)
+                return merged3
+
+        # Нічого не допомогло — повертаємо перший merged з revenue=0
+        merged['revenue'] = merged.get('quantity', 0) * 0.0
+        return merged
     
     def get_latest_decade_data(self, df_work: pd.DataFrame) -> tuple[pd.DataFrame, Optional[int], Optional[int], Optional[int]]:
         """Отримує дані останньої декади останнього місяця"""
