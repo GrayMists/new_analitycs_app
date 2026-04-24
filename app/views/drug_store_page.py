@@ -66,6 +66,8 @@ from app.io import loader_sales as data_loader
 from app.io.supabase_client import init_supabase_client
 # Видаляємо імпорт навігації, оскільки вона вже є в основному файлі
 from app.utils import UKRAINIAN_MONTHS
+import datetime
+from app.io import loader_stock
 
 @st.cache_data(show_spinner=False, ttl=1800)
 def _cached_fetch_sales(region_name, territory, line, months):
@@ -220,6 +222,183 @@ def _fetch_territories(_client, region_id: int | None):
         return []
 
 
+def _compute_stock_diff(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    df = df.sort_values(["pharmacy_id", "drug_name", "visit_date"]).copy()
+    df["prev_quantity"] = (
+        df.groupby(["pharmacy_id", "drug_name"])["quantity"].shift(1)
+    )
+    df["diff"] = df["quantity"] - df["prev_quantity"]
+    df["is_latest"] = ~df.duplicated(subset=["pharmacy_id", "drug_name"], keep="last")
+    return df
+
+
+def _style_stock_row(row: pd.Series) -> list[str]:
+    n_cols = len(row)
+    styles = [""] * n_cols
+    qty = row.get("Поточний залишок", None)
+    diff = row.get("Різниця", None)
+
+    if pd.notna(qty) and qty == 0:
+        return ["background-color: #f8d7da; color: #721c24"] * n_cols
+
+    if "Різниця" in row.index:
+        diff_idx = row.index.get_loc("Різниця")
+        if pd.notna(diff):
+            if diff < 0:
+                styles[diff_idx] = "background-color: #d4edda; color: #155724"
+            elif diff > 0:
+                styles[diff_idx] = "background-color: #cce5ff; color: #004085"
+            else:
+                styles[diff_idx] = "background-color: #fff3cd; color: #856404"
+    return styles
+
+
+def _render_stock_tab(client) -> None:
+    st.markdown("#### Фільтри")
+    col_f1, col_f2, col_f3 = st.columns([3, 2, 2])
+
+    with col_f1:
+        mrs_df = loader_stock.fetch_medical_representatives()
+        mr_options = mrs_df["full_name"].tolist() if not mrs_df.empty else []
+        sel_mp = st.multiselect(
+            "МП",
+            options=mr_options,
+            default=[],
+            key="stock_sel_mp",
+        )
+
+    with col_f2:
+        date_from = st.date_input(
+            "Дата від",
+            value=datetime.date.today() - datetime.timedelta(days=30),
+            key="stock_date_from",
+        )
+
+    with col_f3:
+        date_to = st.date_input(
+            "Дата до",
+            value=datetime.date.today(),
+            key="stock_date_to",
+        )
+
+    load_btn = st.button("Завантажити", type="primary", key="stock_load_btn")
+
+    ss = st.session_state
+
+    if load_btn:
+        if date_from > date_to:
+            st.error("Дата 'від' не може бути пізніше дати 'до'.")
+            return
+
+        mp_ids_tuple = None
+        if sel_mp and not mrs_df.empty:
+            mp_ids = mrs_df[mrs_df["full_name"].isin(sel_mp)]["id"].tolist()
+            mp_ids_tuple = tuple(mp_ids) if mp_ids else None
+
+        with st.spinner("Завантажую залишки..."):
+            raw_df = loader_stock.fetch_stock_reports(
+                mp_ids=mp_ids_tuple,
+                date_from=date_from.isoformat(),
+                date_to=date_to.isoformat(),
+            )
+
+        if raw_df.empty:
+            st.warning("Дані не знайдені для обраних фільтрів.")
+            ss["stock_df_processed"] = pd.DataFrame()
+            return
+
+        ss["stock_df_processed"] = _compute_stock_diff(raw_df)
+
+    processed = ss.get("stock_df_processed")
+
+    if processed is None:
+        st.info("Оберіть фільтри та натисніть «Завантажити».")
+        return
+
+    if isinstance(processed, pd.DataFrame) and processed.empty:
+        return
+
+    latest_df = processed[processed["is_latest"]].copy()
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("Унікальних аптек", int(latest_df["pharmacy_id"].nunique()))
+    col_m2.metric("Унікальних візитів", int(processed["visit_session_id"].nunique()))
+    col_m3.metric("Унікальних МП", int(processed["mp_id"].nunique()))
+
+    display_df = latest_df[[
+        "pharmacy_id", "pharmacy_name", "pharmacy_city", "drug_name",
+        "mp_full_name", "visit_date", "quantity", "prev_quantity", "diff"
+    ]].copy()
+
+    display_df["Аптека"] = display_df["pharmacy_name"] + " (" + display_df["pharmacy_city"] + ")"
+    display_df["Дата візиту"] = display_df["visit_date"].dt.strftime("%Y-%m-%d")
+    display_df = display_df.rename(columns={
+        "drug_name": "Препарат",
+        "mp_full_name": "МП",
+        "quantity": "Поточний залишок",
+        "prev_quantity": "Попередній залишок",
+        "diff": "Різниця",
+    })
+    display_df = display_df[[
+        "Аптека", "Препарат", "МП", "Дата візиту",
+        "Поточний залишок", "Попередній залишок", "Різниця"
+    ]]
+
+    styled = (
+        display_df.style
+        .apply(_style_stock_row, axis=1)
+        .format(
+            na_rep="—",
+            formatter={
+                "Поточний залишок": "{:.0f}",
+                "Попередній залишок": "{:.0f}",
+                "Різниця": "{:+.0f}",
+            },
+        )
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True, height=500)
+
+    st.markdown("---")
+    st.markdown("#### Детальна історія по аптеці")
+
+    ph_map = (
+        latest_df.drop_duplicates("pharmacy_id")
+        .set_index("pharmacy_id")
+        .apply(lambda r: f"{r['pharmacy_name']} ({r['pharmacy_city']})", axis=1)
+        .to_dict()
+    )
+    ph_options = sorted(ph_map.values())
+    ph_inv_map = {v: k for k, v in ph_map.items()}
+
+    sel_ph_label = st.selectbox(
+        "Оберіть аптеку для перегляду повної історії",
+        options=["(не обрано)"] + ph_options,
+        key="stock_history_pharmacy",
+    )
+
+    if sel_ph_label and sel_ph_label != "(не обрано)":
+        sel_ph_id = ph_inv_map.get(sel_ph_label)
+        if sel_ph_id:
+            hist = processed[processed["pharmacy_id"] == sel_ph_id].sort_values(
+                ["drug_name", "visit_date"]
+            )
+            for drug, drug_hist in hist.groupby("drug_name"):
+                with st.expander(f"Препарат: {drug}"):
+                    h = drug_hist[[
+                        "visit_date", "quantity", "prev_quantity", "diff", "mp_full_name"
+                    ]].rename(columns={
+                        "visit_date": "Дата",
+                        "quantity": "Залишок",
+                        "prev_quantity": "Попередній залишок",
+                        "diff": "Різниця",
+                        "mp_full_name": "МП",
+                    }).copy()
+                    h["Дата"] = h["Дата"].dt.strftime("%Y-%m-%d")
+                    st.dataframe(h, use_container_width=True, hide_index=True)
+
+
 def show():
     _require_login()
     st.set_page_config(layout="wide")
@@ -245,6 +424,7 @@ def show():
         ss['sales_submit_once'] = False
     ss.setdefault('filters_dirty', False)
     ss.setdefault('last_submitted_filters', None)
+    ss.setdefault('stock_df_processed', None)
 
     # Отримуємо дані користувача
     user = st.session_state.get('auth_user')
@@ -489,365 +669,371 @@ def show():
         if 'revenue' not in df_with_revenue.columns:
             df_with_revenue['revenue'] = 0.0
 
-    # --- Дві колонки: 1) Мережі/точки  2) ABC-аналіз аптек ---
-    col_net, col_abc = st.columns([2,5])
+    tab_sales, tab_stock = st.tabs(["📊 Аналіз продажів", "📦 Залишки в аптеках"])
 
-    with col_net:
-        # --- Tabs: 1) Торгові точки  2) Упаковки  3) Суми   ---
-        tab_points, tab_packs, tab_sum_period, tab_fact_addr = st.tabs([
-            "Торгові точки", "Упаковки", "Сума", "Факт за адресами"
-        ])
+    with tab_sales:
+        # --- Дві колонки: 1) Мережі/точки  2) ABC-аналіз аптек ---
+        col_net, col_abc = st.columns([2,5])
 
-        with tab_points:
-            st.subheader("Мережі та кількість торгових точок")
-            net_src = df_with_revenue.copy()
-            if 'new_client' not in net_src.columns:
-                st.info("Колонка 'new_client' відсутня — неможливо порахувати мережі.")
-            else:
-                # Сформуємо адресний ключ
-                if {'city','street','house_number'}.issubset(net_src.columns):
-                    net_tmp = net_src.copy()
-                    net_tmp['__city__'] = net_tmp['city'].fillna('').astype(str).str.strip()
-                    net_tmp['__street__'] = net_tmp['street'].fillna('').astype(str).str.strip()
-                    net_tmp['__house__'] = net_tmp['house_number'].fillna('').astype(str).str.strip()
-                    net_tmp['__addr_key__'] = (
-                        net_tmp['__city__'].str.lower() + '|' + net_tmp['__street__'].str.lower() + '|' + net_tmp['__house__'].str.lower()
-                    )
+        with col_net:
+            # --- Tabs: 1) Торгові точки  2) Упаковки  3) Суми   ---
+            tab_points, tab_packs, tab_sum_period, tab_fact_addr = st.tabs([
+                "Торгові точки", "Упаковки", "Сума", "Факт за адресами"
+            ])
+
+            with tab_points:
+                st.subheader("Мережі та кількість торгових точок")
+                net_src = df_with_revenue.copy()
+                if 'new_client' not in net_src.columns:
+                    st.info("Колонка 'new_client' відсутня — неможливо порахувати мережі.")
                 else:
-                    net_tmp = net_src.copy()
-                    if 'full_address_processed' in net_tmp.columns:
-                        net_tmp['__addr_key__'] = net_tmp['full_address_processed'].astype(str).fillna('').str.strip().str.lower()
-                    elif 'address' in net_tmp.columns:
-                        net_tmp['__addr_key__'] = net_tmp['address'].astype(str).fillna('').str.strip().str.lower()
+                    # Сформуємо адресний ключ
+                    if {'city','street','house_number'}.issubset(net_src.columns):
+                        net_tmp = net_src.copy()
+                        net_tmp['__city__'] = net_tmp['city'].fillna('').astype(str).str.strip()
+                        net_tmp['__street__'] = net_tmp['street'].fillna('').astype(str).str.strip()
+                        net_tmp['__house__'] = net_tmp['house_number'].fillna('').astype(str).str.strip()
+                        net_tmp['__addr_key__'] = (
+                            net_tmp['__city__'].str.lower() + '|' + net_tmp['__street__'].str.lower() + '|' + net_tmp['__house__'].str.lower()
+                        )
                     else:
-                        net_tmp['__addr_key__'] = ''
-                # Назва мережі
-                net_tmp['__network__'] = net_tmp['new_client'].astype(str).fillna('').str.strip()
-                # Відкидаємо порожні
-                net_tmp = net_tmp[(net_tmp['__network__'] != '') & (net_tmp['__addr_key__'] != '')].copy()
-                if net_tmp.empty:
-                    st.info("Немає достатніх даних (мережа/адреса) для підрахунку торгових точок.")
+                        net_tmp = net_src.copy()
+                        if 'full_address_processed' in net_tmp.columns:
+                            net_tmp['__addr_key__'] = net_tmp['full_address_processed'].astype(str).fillna('').str.strip().str.lower()
+                        elif 'address' in net_tmp.columns:
+                            net_tmp['__addr_key__'] = net_tmp['address'].astype(str).fillna('').str.strip().str.lower()
+                        else:
+                            net_tmp['__addr_key__'] = ''
+                    # Назва мережі
+                    net_tmp['__network__'] = net_tmp['new_client'].astype(str).fillna('').str.strip()
+                    # Відкидаємо порожні
+                    net_tmp = net_tmp[(net_tmp['__network__'] != '') & (net_tmp['__addr_key__'] != '')].copy()
+                    if net_tmp.empty:
+                        st.info("Немає достатніх даних (мережа/адреса) для підрахунку торгових точок.")
+                    else:
+                        # Унікальні пари (мережа, адреса)
+                        net_pairs = net_tmp[['__network__','__addr_key__']].drop_duplicates()
+                        # Кількість унікальних адрес (торгових точок) на мережу
+                        net_cnt = (
+                            net_pairs.groupby('__network__', as_index=False)['__addr_key__']
+                            .nunique()
+                            .rename(columns={'__network__':'Мережа','__addr_key__':'Точок'})
+                            .sort_values('Точок', ascending=False)
+                        )
+                        total_points = int(net_cnt['Точок'].sum()) or 1
+                        net_cnt['Частка, %'] = 100.0 * net_cnt['Точок'] / total_points
+                        net_cnt['Кумулятивна, %'] = net_cnt['Частка, %'].cumsum()
+                        # (Необов’язково) кількість міст для мережі
+                        if 'city' in net_src.columns:
+                            city_pairs = net_tmp[['__network__','city']].drop_duplicates()
+                            city_cnt = city_pairs.groupby('__network__', as_index=False)['city'].nunique().rename(columns={'__network__':'Мережа','city':'Міста(к-сть)'})
+                            net_cnt = net_cnt.merge(city_cnt, on='Мережа', how='left')
+                        # Вивід
+                        cols_net = ['Мережа','Точок','Частка, %','Кумулятивна, %'] + ([ 'Міста(к-сть)'] if 'Міста(к-сть)' in net_cnt.columns else [])
+                        st.dataframe(
+                            net_cnt[cols_net]
+                                .style
+                                .format({'Точок':'{:,.0f}','Частка, %':'{:,.2f}','Кумулятивна, %':'{:,.2f}'})
+                                .background_gradient(cmap='Blues', subset=['Точок']),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=600
+                        )
+
+            with tab_packs:
+                st.subheader("Мережі та кількість упаковок")
+                qty_src = df_with_revenue.copy()
+                if 'new_client' not in qty_src.columns:
+                    st.info("Колонка 'new_client' відсутня — неможливо порахувати мережі.")
+                elif 'quantity' not in qty_src.columns:
+                    st.info("Колонка 'quantity' відсутня — неможливо порахувати кількість упаковок.")
                 else:
-                    # Унікальні пари (мережа, адреса)
-                    net_pairs = net_tmp[['__network__','__addr_key__']].drop_duplicates()
-                    # Кількість унікальних адрес (торгових точок) на мережу
-                    net_cnt = (
-                        net_pairs.groupby('__network__', as_index=False)['__addr_key__']
-                        .nunique()
-                        .rename(columns={'__network__':'Мережа','__addr_key__':'Точок'})
-                        .sort_values('Точок', ascending=False)
-                    )
-                    total_points = int(net_cnt['Точок'].sum()) or 1
-                    net_cnt['Частка, %'] = 100.0 * net_cnt['Точок'] / total_points
-                    net_cnt['Кумулятивна, %'] = net_cnt['Частка, %'].cumsum()
-                    # (Необов’язково) кількість міст для мережі
-                    if 'city' in net_src.columns:
-                        city_pairs = net_tmp[['__network__','city']].drop_duplicates()
-                        city_cnt = city_pairs.groupby('__network__', as_index=False)['city'].nunique().rename(columns={'__network__':'Мережа','city':'Міста(к-сть)'})
-                        net_cnt = net_cnt.merge(city_cnt, on='Мережа', how='left')
-                    # Вивід
-                    cols_net = ['Мережа','Точок','Частка, %','Кумулятивна, %'] + ([ 'Міста(к-сть)'] if 'Міста(к-сть)' in net_cnt.columns else [])
+                    qty_tmp = qty_src.copy()
+                    # Назва мережі
+                    qty_tmp['__network__'] = qty_tmp['new_client'].astype(str).fillna('').str.strip()
+                    # Відкидаємо порожні
+                    qty_tmp = qty_tmp[(qty_tmp['__network__'] != '')].copy()
+                    if qty_tmp.empty:
+                        st.info("Немає достатніх даних (мережа) для підрахунку упаковок.")
+                    else:
+                        # Гарантуємо числовий тип для quantity
+                        qty_tmp['quantity'] = pd.to_numeric(qty_tmp['quantity'], errors='coerce').fillna(0)
+                        net_qty = (
+                            qty_tmp.groupby('__network__', as_index=False)['quantity']
+                            .sum()
+                            .rename(columns={'__network__':'Мережа','quantity':'Упаковок'})
+                            .sort_values('Упаковок', ascending=False)
+                        )
+                        total_qty = float(net_qty['Упаковок'].sum()) or 1.0
+                        net_qty['Частка, %'] = 100.0 * net_qty['Упаковок'] / total_qty
+                        net_qty['Кумулятивна, %'] = net_qty['Частка, %'].cumsum()
+                        st.dataframe(
+                            net_qty[['Мережа','Упаковок','Частка, %','Кумулятивна, %']]
+                                .style
+                                .format({'Упаковок':'{:,.0f}','Частка, %':'{:,.2f}','Кумулятивна, %':'{:,.2f}'})
+                                .background_gradient(cmap='Blues', subset=['Упаковок'])
+                                .background_gradient(cmap='Greens', subset=['Частка, %']),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=600
+                        )
+
+            with tab_sum_period:
+                st.subheader("Сума по мережах (за обраний період)")
+                sum_src = df_with_revenue.copy()
+                if 'new_client' not in sum_src.columns:
+                    st.info("Колонка 'new_client' відсутня — неможливо порахувати мережі.")
+                elif 'revenue' not in sum_src.columns:
+                    st.info("Колонка 'revenue' відсутня — суми не розраховані.")
+                else:
+                    tmp = sum_src.copy()
+                    tmp['__network__'] = tmp['new_client'].astype(str).fillna('').str.strip()
+                    tmp = tmp[tmp['__network__'] != '']
+                    if tmp.empty:
+                        st.info("Немає достатніх даних (мережа) для підрахунку суми.")
+                    else:
+                        tmp['revenue'] = pd.to_numeric(tmp['revenue'], errors='coerce').fillna(0.0)
+                        net_sum = (
+                            tmp.groupby('__network__', as_index=False)['revenue']
+                            .sum()
+                            .rename(columns={'__network__':'Мережа','revenue':'Сума'})
+                            .sort_values('Сума', ascending=False)
+                        )
+
+            with tab_fact_addr:
+                st.subheader("Деталізація фактичних замовлень по унікальних адресах")
+                # Локальні фільтри (місто/вулиця) на основі df_work
+                local_src = df_work.copy()
+                city_col = 'city' if 'city' in local_src.columns else None
+                street_col = 'street' if 'street' in local_src.columns else None
+                col_c, col_s = st.columns(2)
+                if city_col:
+                    city_opts = sorted({str(x).strip() for x in local_src[city_col].dropna() if str(x).strip()})
+                    sel_cities = col_c.multiselect("Місто", options=city_opts, default=[])
+                    if sel_cities:
+                        local_src = local_src[local_src[city_col].astype(str).str.strip().isin(sel_cities)]
+                else:
+                    sel_cities = []
+                if street_col:
+                    street_opts = sorted({str(x).strip() for x in local_src[street_col].dropna() if str(x).strip()})
+                    sel_streets = col_s.multiselect("Вулиця", options=street_opts, default=[])
+                    if sel_streets:
+                        local_src = local_src[local_src[street_col].astype(str).str.strip().isin(sel_streets)]
+                else:
+                    sel_streets = []
+
+                # Обчислюємо "факт" як позитивну кількість (за наявності quantity)
+                if 'quantity' in local_src.columns:
+                    df_actual_sales = local_src.copy()
+                    df_actual_sales['actual_quantity'] = pd.to_numeric(df_actual_sales['quantity'], errors='coerce').fillna(0)
+                    df_actual_sales = df_actual_sales[df_actual_sales['actual_quantity'] > 0]
+                else:
+                    df_actual_sales = pd.DataFrame()
+
+                if df_actual_sales.empty:
+                    st.warning("За обраними фільтрами не знайдено даних для розрахунку.")
+                else:
+                    def highlight_positive_dark_green(val):
+                        return f"background-color: {'#4B6F44' if (pd.to_numeric(val, errors='coerce') or 0) > 0 else ''}"
+
+                    st.subheader("Загальна зведена таблиця по фактичних продажах")
+                    idx_cols_exist = [c for c in ['product_name'] if c in df_actual_sales.columns]
+                    time_cols_exist = [c for c in ['year','month_int','decade'] if c in df_actual_sales.columns]
+                    if idx_cols_exist and time_cols_exist:
+                        pivot_fact = df_actual_sales.pivot_table(
+                            index=idx_cols_exist[0],
+                            columns=time_cols_exist,
+                            values='actual_quantity',
+                            aggfunc='sum', fill_value=0
+                        )
+                        st.dataframe(pivot_fact.style.applymap(highlight_positive_dark_green).format('{:.0f}'))
+                    st.markdown("---")
+
+                    # Формуємо повну адресу і групуємо по адресі+клієнту
+                    addr_df = df_actual_sales.copy()
+                    if {'city','street','house_number'}.issubset(addr_df.columns):
+                        addr_df['full_address'] = (
+                            addr_df['city'].fillna('').astype(str).str.strip() + ', ' +
+                            addr_df['street'].fillna('').astype(str).str.strip() + ' ' +
+                            addr_df['house_number'].fillna('').astype(str).str.strip()
+                        ).str.strip(', ')
+                    elif 'full_address_processed' in addr_df.columns:
+                        addr_df['full_address'] = addr_df['full_address_processed'].astype(str).fillna('').str.strip()
+                    elif 'address' in addr_df.columns:
+                        addr_df['full_address'] = addr_df['address'].astype(str).fillna('').str.strip()
+                    else:
+                        addr_df['full_address'] = ''
+
+                    client_name_col = next((c for c in ['new_client','client','pharmacy','client_name'] if c in addr_df.columns), None)
+                    if client_name_col is None:
+                        addr_df['__client_name__'] = ''
+                        client_name_col = '__client_name__'
+
+                    grouped = addr_df.groupby(['full_address', client_name_col])
+                    st.info(f"Знайдено {grouped.ngroups} унікальних комбінацій адрес і клієнтів з фактичними продажами.")
+
+                    for (full_address, client_name), group in grouped:
+                        exp_title = f"**{full_address or '—'}** (Клієнт: *{client_name or '—'}*)"
+                        with st.expander(exp_title):
+                            st.metric("Всього фактичних продажів за адресою:", f"{int(group['actual_quantity'].sum()):,}")
+                            if idx_cols_exist and time_cols_exist:
+                                pivot_table = group.pivot_table(
+                                    index=idx_cols_exist[0],
+                                    columns=time_cols_exist,
+                                    values='actual_quantity',
+                                    aggfunc='sum', fill_value=0
+                                )
+                                st.dataframe(pivot_table.style.applymap(highlight_positive_dark_green).format('{:.0f}'))
+                        total_rev = float(net_sum['Сума'].sum()) or 1.0
+                        net_sum['Частка, %'] = 100.0 * net_sum['Сума'] / total_rev
+                        net_sum['Кумулятивна, %'] = net_sum['Частка, %'].cumsum()
+                        st.dataframe(
+                            net_sum[['Мережа','Сума','Частка, %','Кумулятивна, %']]
+                                .style
+                                .format({'Сума':'{:,.2f} грн','Частка, %':'{:,.2f}','Кумулятивна, %':'{:,.2f}'})
+                                .background_gradient(cmap='Greens', subset=['Сума'])
+                                .background_gradient(cmap='Blues', subset=['Частка, %']),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=600
+                        )
+
+        with col_abc:
+            # === ABC-аналіз аптек (за унікальною адресою) ===
+            st.markdown("**ABC-аналіз аптек (за унікальною адресою)**")
+
+            # Optional filter by products for pharmacy ABC
+            prod_col_filter = 'product_name'
+            if prod_col_filter in df_with_revenue.columns:
+                prod_options = (
+                    df_with_revenue[prod_col_filter]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
+                    .sort_values()
+                    .unique()
+                    .tolist()
+                )
+                selected_products = st.multiselect(
+                    'Фільтр препаратів для ABC аптек',
+                    options=prod_options,
+                    default=[],
+                    help='Оберіть один або кілька препаратів. Порожній вибір = всі препарати.'
+                )
+            else:
+                selected_products = []
+
+            df_pharm_abc = df_with_revenue.copy()
+            if selected_products and prod_col_filter in df_pharm_abc.columns:
+                df_pharm_abc = df_pharm_abc[df_pharm_abc[prod_col_filter].astype(str).str.strip().isin(selected_products)]
+                if df_pharm_abc.empty:
+                    st.info('За обраними препаратами даних немає для ABC-аналізу аптек.')
+
+            # Build address key and display fields
+            if {'city','street','house_number'}.issubset(df_pharm_abc.columns):
+                tmp2 = df_pharm_abc.copy()
+                tmp2['__city__'] = tmp2['city'].fillna('').astype(str).str.strip()
+                tmp2['__street__'] = tmp2['street'].fillna('').astype(str).str.strip()
+                tmp2['__house__'] = tmp2['house_number'].fillna('').astype(str).str.strip()
+                tmp2['__addr_key__'] = (
+                    tmp2['__city__'].str.lower() + '|' + tmp2['__street__'].str.lower() + '|' + tmp2['__house__'].str.lower()
+                )
+                tmp2['__city_disp__'] = tmp2['__city__']
+                tmp2['__addr_disp__'] = (tmp2['__street__'] + ' ' + tmp2['__house__']).str.strip()
+                name_cols = [c for c in ['new_client','client','pharmacy','client_name'] if c in tmp2.columns]
+                if name_cols:
+                    tmp2['__client_name__'] = tmp2[name_cols[0]].astype(str).fillna('').str.strip()
+                else:
+                    tmp2['__client_name__'] = ''
+            else:
+                tmp2 = df_pharm_abc.copy()
+                if 'full_address_processed' in tmp2.columns:
+                    tmp2['__addr_key__'] = tmp2['full_address_processed'].astype(str).fillna('').str.strip().str.lower()
+                    tmp2['__addr_disp__'] = tmp2['full_address_processed'].astype(str).fillna('').str.strip()
+                elif 'address' in tmp2.columns:
+                    tmp2['__addr_key__'] = tmp2['address'].astype(str).fillna('').str.strip().str.lower()
+                    tmp2['__addr_disp__'] = tmp2['address'].astype(str).fillna('').str.strip()
+                else:
+                    tmp2['__addr_key__'] = ''
+                    tmp2['__addr_disp__'] = ''
+                tmp2['__city_disp__'] = tmp2.get('city', pd.Series('', index=tmp2.index)).astype(str).fillna('').str.strip()
+                name_cols = [c for c in ['new_client','client','pharmacy','client_name'] if c in tmp2.columns]
+                if name_cols:
+                    tmp2['__client_name__'] = tmp2[name_cols[0]].astype(str).fillna('').str.strip()
+                else:
+                    tmp2['__client_name__'] = ''
+
+            if (tmp2['__addr_key__'] == '').all():
+                st.info("Не вдалось сформувати унікальну адресу для ABC-аналізу аптек.")
+                return
+
+            # Aggregate by address
+            pharm_rev = (
+                tmp2.groupby('__addr_key__', as_index=False)['revenue']
+                .sum().rename(columns={'revenue':'Сума'})
+                .sort_values('Сума', ascending=False)
+            )
+            pharm_qty = (
+                tmp2.groupby('__addr_key__', as_index=False)['quantity']
+                .sum().rename(columns={'quantity':'К-сть'})
+                .sort_values('К-сть', ascending=False)
+            )
+            disp2 = tmp2[['__addr_key__','__city_disp__','__addr_disp__','__client_name__']].groupby('__addr_key__', as_index=False).agg(
+                __city_disp__=('__city_disp__', lambda s: next((x for x in s if str(x).strip()), '')),
+                __addr_disp__=('__addr_disp__', lambda s: next((x for x in s if str(x).strip()), '')),
+                __client_name__=('__client_name__', lambda s: next((x for x in s if str(x).strip()), '')),
+            )
+            pharm_rev = pharm_rev.merge(disp2, on='__addr_key__', how='left').rename(columns={'__city_disp__':'Місто','__addr_disp__':'Адреса','__client_name__':'Аптека'})
+            pharm_qty = pharm_qty.merge(disp2, on='__addr_key__', how='left').rename(columns={'__city_disp__':'Місто','__addr_disp__':'Адреса','__client_name__':'Аптека'})
+
+            tab_ph_rev, tab_ph_qty = st.tabs(["За виручкою", "За кількістю"])
+            with tab_ph_rev:
+                if not pharm_rev.empty:
+                    total_r = float(pharm_rev['Сума'].sum()) or 1.0
+                    pharm_rev['Частка, %'] = 100.0 * pharm_rev['Сума'] / total_r
+                    pharm_rev['Кумулятивна частка, %'] = pharm_rev['Частка, %'].cumsum()
+                    def _abc_class_addr_r(x):
+                        if x <= 80: return 'A'
+                        if x <= 95: return 'B'
+                        return 'C'
+                    pharm_rev['Клас'] = pharm_rev['Кумулятивна частка, %'].apply(_abc_class_addr_r)
                     st.dataframe(
-                        net_cnt[cols_net]
+                        pharm_rev[['Сума','Місто','Адреса','Аптека','Частка, %','Кумулятивна частка, %','Клас']]
                             .style
-                            .format({'Точок':'{:,.0f}','Частка, %':'{:,.2f}','Кумулятивна, %':'{:,.2f}'})
-                            .background_gradient(cmap='Blues', subset=['Точок']),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=600
-                    )
-
-        with tab_packs:
-            st.subheader("Мережі та кількість упаковок")
-            qty_src = df_with_revenue.copy()
-            if 'new_client' not in qty_src.columns:
-                st.info("Колонка 'new_client' відсутня — неможливо порахувати мережі.")
-            elif 'quantity' not in qty_src.columns:
-                st.info("Колонка 'quantity' відсутня — неможливо порахувати кількість упаковок.")
-            else:
-                qty_tmp = qty_src.copy()
-                # Назва мережі
-                qty_tmp['__network__'] = qty_tmp['new_client'].astype(str).fillna('').str.strip()
-                # Відкидаємо порожні
-                qty_tmp = qty_tmp[(qty_tmp['__network__'] != '')].copy()
-                if qty_tmp.empty:
-                    st.info("Немає достатніх даних (мережа) для підрахунку упаковок.")
-                else:
-                    # Гарантуємо числовий тип для quantity
-                    qty_tmp['quantity'] = pd.to_numeric(qty_tmp['quantity'], errors='coerce').fillna(0)
-                    net_qty = (
-                        qty_tmp.groupby('__network__', as_index=False)['quantity']
-                        .sum()
-                        .rename(columns={'__network__':'Мережа','quantity':'Упаковок'})
-                        .sort_values('Упаковок', ascending=False)
-                    )
-                    total_qty = float(net_qty['Упаковок'].sum()) or 1.0
-                    net_qty['Частка, %'] = 100.0 * net_qty['Упаковок'] / total_qty
-                    net_qty['Кумулятивна, %'] = net_qty['Частка, %'].cumsum()
-                    st.dataframe(
-                        net_qty[['Мережа','Упаковок','Частка, %','Кумулятивна, %']]
-                            .style
-                            .format({'Упаковок':'{:,.0f}','Частка, %':'{:,.2f}','Кумулятивна, %':'{:,.2f}'})
-                            .background_gradient(cmap='Blues', subset=['Упаковок'])
-                            .background_gradient(cmap='Greens', subset=['Частка, %']),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=600
-                    )
-
-        with tab_sum_period:
-            st.subheader("Сума по мережах (за обраний період)")
-            sum_src = df_with_revenue.copy()
-            if 'new_client' not in sum_src.columns:
-                st.info("Колонка 'new_client' відсутня — неможливо порахувати мережі.")
-            elif 'revenue' not in sum_src.columns:
-                st.info("Колонка 'revenue' відсутня — суми не розраховані.")
-            else:
-                tmp = sum_src.copy()
-                tmp['__network__'] = tmp['new_client'].astype(str).fillna('').str.strip()
-                tmp = tmp[tmp['__network__'] != '']
-                if tmp.empty:
-                    st.info("Немає достатніх даних (мережа) для підрахунку суми.")
-                else:
-                    tmp['revenue'] = pd.to_numeric(tmp['revenue'], errors='coerce').fillna(0.0)
-                    net_sum = (
-                        tmp.groupby('__network__', as_index=False)['revenue']
-                        .sum()
-                        .rename(columns={'__network__':'Мережа','revenue':'Сума'})
-                        .sort_values('Сума', ascending=False)
-                    )
-
-        with tab_fact_addr:
-            st.subheader("Деталізація фактичних замовлень по унікальних адресах")
-            # Локальні фільтри (місто/вулиця) на основі df_work
-            local_src = df_work.copy()
-            city_col = 'city' if 'city' in local_src.columns else None
-            street_col = 'street' if 'street' in local_src.columns else None
-            col_c, col_s = st.columns(2)
-            if city_col:
-                city_opts = sorted({str(x).strip() for x in local_src[city_col].dropna() if str(x).strip()})
-                sel_cities = col_c.multiselect("Місто", options=city_opts, default=[])
-                if sel_cities:
-                    local_src = local_src[local_src[city_col].astype(str).str.strip().isin(sel_cities)]
-            else:
-                sel_cities = []
-            if street_col:
-                street_opts = sorted({str(x).strip() for x in local_src[street_col].dropna() if str(x).strip()})
-                sel_streets = col_s.multiselect("Вулиця", options=street_opts, default=[])
-                if sel_streets:
-                    local_src = local_src[local_src[street_col].astype(str).str.strip().isin(sel_streets)]
-            else:
-                sel_streets = []
-
-            # Обчислюємо "факт" як позитивну кількість (за наявності quantity)
-            if 'quantity' in local_src.columns:
-                df_actual_sales = local_src.copy()
-                df_actual_sales['actual_quantity'] = pd.to_numeric(df_actual_sales['quantity'], errors='coerce').fillna(0)
-                df_actual_sales = df_actual_sales[df_actual_sales['actual_quantity'] > 0]
-            else:
-                df_actual_sales = pd.DataFrame()
-
-            if df_actual_sales.empty:
-                st.warning("За обраними фільтрами не знайдено даних для розрахунку.")
-            else:
-                def highlight_positive_dark_green(val):
-                    return f"background-color: {'#4B6F44' if (pd.to_numeric(val, errors='coerce') or 0) > 0 else ''}"
-
-                st.subheader("Загальна зведена таблиця по фактичних продажах")
-                idx_cols_exist = [c for c in ['product_name'] if c in df_actual_sales.columns]
-                time_cols_exist = [c for c in ['year','month_int','decade'] if c in df_actual_sales.columns]
-                if idx_cols_exist and time_cols_exist:
-                    pivot_fact = df_actual_sales.pivot_table(
-                        index=idx_cols_exist[0],
-                        columns=time_cols_exist,
-                        values='actual_quantity',
-                        aggfunc='sum', fill_value=0
-                    )
-                    st.dataframe(pivot_fact.style.applymap(highlight_positive_dark_green).format('{:.0f}'))
-                st.markdown("---")
-
-                # Формуємо повну адресу і групуємо по адресі+клієнту
-                addr_df = df_actual_sales.copy()
-                if {'city','street','house_number'}.issubset(addr_df.columns):
-                    addr_df['full_address'] = (
-                        addr_df['city'].fillna('').astype(str).str.strip() + ', ' +
-                        addr_df['street'].fillna('').astype(str).str.strip() + ' ' +
-                        addr_df['house_number'].fillna('').astype(str).str.strip()
-                    ).str.strip(', ')
-                elif 'full_address_processed' in addr_df.columns:
-                    addr_df['full_address'] = addr_df['full_address_processed'].astype(str).fillna('').str.strip()
-                elif 'address' in addr_df.columns:
-                    addr_df['full_address'] = addr_df['address'].astype(str).fillna('').str.strip()
-                else:
-                    addr_df['full_address'] = ''
-
-                client_name_col = next((c for c in ['new_client','client','pharmacy','client_name'] if c in addr_df.columns), None)
-                if client_name_col is None:
-                    addr_df['__client_name__'] = ''
-                    client_name_col = '__client_name__'
-
-                grouped = addr_df.groupby(['full_address', client_name_col])
-                st.info(f"Знайдено {grouped.ngroups} унікальних комбінацій адрес і клієнтів з фактичними продажами.")
-
-                for (full_address, client_name), group in grouped:
-                    exp_title = f"**{full_address or '—'}** (Клієнт: *{client_name or '—'}*)"
-                    with st.expander(exp_title):
-                        st.metric("Всього фактичних продажів за адресою:", f"{int(group['actual_quantity'].sum()):,}")
-                        if idx_cols_exist and time_cols_exist:
-                            pivot_table = group.pivot_table(
-                                index=idx_cols_exist[0],
-                                columns=time_cols_exist,
-                                values='actual_quantity',
-                                aggfunc='sum', fill_value=0
-                            )
-                            st.dataframe(pivot_table.style.applymap(highlight_positive_dark_green).format('{:.0f}'))
-                    total_rev = float(net_sum['Сума'].sum()) or 1.0
-                    net_sum['Частка, %'] = 100.0 * net_sum['Сума'] / total_rev
-                    net_sum['Кумулятивна, %'] = net_sum['Частка, %'].cumsum()
-                    st.dataframe(
-                        net_sum[['Мережа','Сума','Частка, %','Кумулятивна, %']]
-                            .style
-                            .format({'Сума':'{:,.2f} грн','Частка, %':'{:,.2f}','Кумулятивна, %':'{:,.2f}'})
+                            .format({'Сума':'{:,.2f} грн','Частка, %':'{:,.2f}','Кумулятивна частка, %':'{:,.2f}'} )
                             .background_gradient(cmap='Greens', subset=['Сума'])
                             .background_gradient(cmap='Blues', subset=['Частка, %']),
                         use_container_width=True,
                         hide_index=True,
-                        height=600
+                        height=545
                     )
+                else:
+                    st.info("Немає даних для ABC-аналізу аптек за виручкою.")
+            with tab_ph_qty:
+                if not pharm_qty.empty:
+                    total_q = float(pharm_qty['К-сть'].sum()) or 1.0
+                    pharm_qty['Частка, %'] = 100.0 * pharm_qty['К-сть'] / total_q
+                    pharm_qty['Кумулятивна частка, %'] = pharm_qty['Частка, %'].cumsum()
+                    def _abc_class_addr_q(x):
+                        if x <= 80: return 'A'
+                        if x <= 95: return 'B'
+                        return 'C'
+                    pharm_qty['Клас'] = pharm_qty['Кумулятивна частка, %'].apply(_abc_class_addr_q)
+                    st.dataframe(
+                        pharm_qty[['К-сть','Місто','Адреса','Аптека','Частка, %','Кумулятивна частка, %','Клас']]
+                            .style
+                            .format({'К-сть':'{:,.0f}','Частка, %':'{:,.2f}','Кумулятивна частка, %':'{:,.2f}'})
+                            .background_gradient(cmap='Blues', subset=['К-сть'])
+                            .background_gradient(cmap='Greens', subset=['Частка, %']),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=545
+                    )
+                else:
+                    st.info("Немає даних для ABC-аналізу аптек за кількістю.")
 
-    with col_abc:
-        # === ABC-аналіз аптек (за унікальною адресою) ===
-        st.markdown("**ABC-аналіз аптек (за унікальною адресою)**")
-
-        # Optional filter by products for pharmacy ABC
-        prod_col_filter = 'product_name'
-        if prod_col_filter in df_with_revenue.columns:
-            prod_options = (
-                df_with_revenue[prod_col_filter]
-                .dropna()
-                .astype(str)
-                .str.strip()
-                .sort_values()
-                .unique()
-                .tolist()
-            )
-            selected_products = st.multiselect(
-                'Фільтр препаратів для ABC аптек',
-                options=prod_options,
-                default=[],
-                help='Оберіть один або кілька препаратів. Порожній вибір = всі препарати.'
-            )
-        else:
-            selected_products = []
-
-        df_pharm_abc = df_with_revenue.copy()
-        if selected_products and prod_col_filter in df_pharm_abc.columns:
-            df_pharm_abc = df_pharm_abc[df_pharm_abc[prod_col_filter].astype(str).str.strip().isin(selected_products)]
-            if df_pharm_abc.empty:
-                st.info('За обраними препаратами даних немає для ABC-аналізу аптек.')
-
-        # Build address key and display fields
-        if {'city','street','house_number'}.issubset(df_pharm_abc.columns):
-            tmp2 = df_pharm_abc.copy()
-            tmp2['__city__'] = tmp2['city'].fillna('').astype(str).str.strip()
-            tmp2['__street__'] = tmp2['street'].fillna('').astype(str).str.strip()
-            tmp2['__house__'] = tmp2['house_number'].fillna('').astype(str).str.strip()
-            tmp2['__addr_key__'] = (
-                tmp2['__city__'].str.lower() + '|' + tmp2['__street__'].str.lower() + '|' + tmp2['__house__'].str.lower()
-            )
-            tmp2['__city_disp__'] = tmp2['__city__']
-            tmp2['__addr_disp__'] = (tmp2['__street__'] + ' ' + tmp2['__house__']).str.strip()
-            name_cols = [c for c in ['new_client','client','pharmacy','client_name'] if c in tmp2.columns]
-            if name_cols:
-                tmp2['__client_name__'] = tmp2[name_cols[0]].astype(str).fillna('').str.strip()
-            else:
-                tmp2['__client_name__'] = ''
-        else:
-            tmp2 = df_pharm_abc.copy()
-            if 'full_address_processed' in tmp2.columns:
-                tmp2['__addr_key__'] = tmp2['full_address_processed'].astype(str).fillna('').str.strip().str.lower()
-                tmp2['__addr_disp__'] = tmp2['full_address_processed'].astype(str).fillna('').str.strip()
-            elif 'address' in tmp2.columns:
-                tmp2['__addr_key__'] = tmp2['address'].astype(str).fillna('').str.strip().str.lower()
-                tmp2['__addr_disp__'] = tmp2['address'].astype(str).fillna('').str.strip()
-            else:
-                tmp2['__addr_key__'] = ''
-                tmp2['__addr_disp__'] = ''
-            tmp2['__city_disp__'] = tmp2.get('city', pd.Series('', index=tmp2.index)).astype(str).fillna('').str.strip()
-            name_cols = [c for c in ['new_client','client','pharmacy','client_name'] if c in tmp2.columns]
-            if name_cols:
-                tmp2['__client_name__'] = tmp2[name_cols[0]].astype(str).fillna('').str.strip()
-            else:
-                tmp2['__client_name__'] = ''
-
-        if (tmp2['__addr_key__'] == '').all():
-            st.info("Не вдалось сформувати унікальну адресу для ABC-аналізу аптек.")
-            return
-
-        # Aggregate by address
-        pharm_rev = (
-            tmp2.groupby('__addr_key__', as_index=False)['revenue']
-            .sum().rename(columns={'revenue':'Сума'})
-            .sort_values('Сума', ascending=False)
-        )
-        pharm_qty = (
-            tmp2.groupby('__addr_key__', as_index=False)['quantity']
-            .sum().rename(columns={'quantity':'К-сть'})
-            .sort_values('К-сть', ascending=False)
-        )
-        disp2 = tmp2[['__addr_key__','__city_disp__','__addr_disp__','__client_name__']].groupby('__addr_key__', as_index=False).agg(
-            __city_disp__=('__city_disp__', lambda s: next((x for x in s if str(x).strip()), '')),
-            __addr_disp__=('__addr_disp__', lambda s: next((x for x in s if str(x).strip()), '')),
-            __client_name__=('__client_name__', lambda s: next((x for x in s if str(x).strip()), '')),
-        )
-        pharm_rev = pharm_rev.merge(disp2, on='__addr_key__', how='left').rename(columns={'__city_disp__':'Місто','__addr_disp__':'Адреса','__client_name__':'Аптека'})
-        pharm_qty = pharm_qty.merge(disp2, on='__addr_key__', how='left').rename(columns={'__city_disp__':'Місто','__addr_disp__':'Адреса','__client_name__':'Аптека'})
-
-        tab_ph_rev, tab_ph_qty = st.tabs(["За виручкою", "За кількістю"])
-        with tab_ph_rev:
-            if not pharm_rev.empty:
-                total_r = float(pharm_rev['Сума'].sum()) or 1.0
-                pharm_rev['Частка, %'] = 100.0 * pharm_rev['Сума'] / total_r
-                pharm_rev['Кумулятивна частка, %'] = pharm_rev['Частка, %'].cumsum()
-                def _abc_class_addr_r(x):
-                    if x <= 80: return 'A'
-                    if x <= 95: return 'B'
-                    return 'C'
-                pharm_rev['Клас'] = pharm_rev['Кумулятивна частка, %'].apply(_abc_class_addr_r)
-                st.dataframe(
-                    pharm_rev[['Сума','Місто','Адреса','Аптека','Частка, %','Кумулятивна частка, %','Клас']]
-                        .style
-                        .format({'Сума':'{:,.2f} грн','Частка, %':'{:,.2f}','Кумулятивна частка, %':'{:,.2f}'} )
-                        .background_gradient(cmap='Greens', subset=['Сума'])
-                        .background_gradient(cmap='Blues', subset=['Частка, %']),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=545
-                )
-            else:
-                st.info("Немає даних для ABC-аналізу аптек за виручкою.")
-        with tab_ph_qty:
-            if not pharm_qty.empty:
-                total_q = float(pharm_qty['К-сть'].sum()) or 1.0
-                pharm_qty['Частка, %'] = 100.0 * pharm_qty['К-сть'] / total_q
-                pharm_qty['Кумулятивна частка, %'] = pharm_qty['Частка, %'].cumsum()
-                def _abc_class_addr_q(x):
-                    if x <= 80: return 'A'
-                    if x <= 95: return 'B'
-                    return 'C'
-                pharm_qty['Клас'] = pharm_qty['Кумулятивна частка, %'].apply(_abc_class_addr_q)
-                st.dataframe(
-                    pharm_qty[['К-сть','Місто','Адреса','Аптека','Частка, %','Кумулятивна частка, %','Клас']]
-                        .style
-                        .format({'К-сть':'{:,.0f}','Частка, %':'{:,.2f}','Кумулятивна частка, %':'{:,.2f}'})
-                        .background_gradient(cmap='Blues', subset=['К-сть'])
-                        .background_gradient(cmap='Greens', subset=['Частка, %']),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=545
-                )
-            else:
-                st.info("Немає даних для ABC-аналізу аптек за кількістю.")
+    with tab_stock:
+        _render_stock_tab(client)
 
 
 def show_drug_store_page():
